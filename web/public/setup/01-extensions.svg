@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 380" width="640" height="380" role="img" aria-label="La página de extensiones de Chrome con el interruptor de modo de desarrollador arriba a la derecha">
+  <style>
+    .t { font-family: 'Segoe UI', system-ui, sans-serif; }
+  </style>
+  <rect width="640" height="380" fill="#1b1d21"/>
+
+  <!-- barra de pestañas + dirección -->
+  <rect x="0" y="0" width="640" height="72" fill="#202124"/>
+  <rect x="10" y="8" width="150" height="30" rx="8" fill="#35363a"/>
+  <text class="t" x="26" y="28" font-size="13" fill="#e8eaed">Extensiones</text>
+  <rect x="52" y="46" width="536" height="18" rx="9" fill="#292a2d"/>
+  <text class="t" x="64" y="59" font-size="11" fill="#9aa0a6">chrome://extensions</text>
+
+  <!--developer mode: ARRIBA A LA DERECHA -->
+  <rect x="404" y="14" width="150" height="22" rx="11" fill="#3c4043"/>
+  <text class="t" x="414" y="29" font-size="10" fill="#e8eaed">Modo de desarrollador</text>
+  <circle cx="546" cy="25" r="9" fill="#5f6368"/>
+  <circle cx="546" cy="25" r="4" fill="#bdc1c6"/>
+
+  <!-- flecha que señala el interruptor -->
+  <path d="M470 60 C470 92 520 92 540 74" fill="none" stroke="#00d18f" stroke-width="2.5" stroke-dasharray="5 4"/>
+  <path d="M540 74 l-9 -3 l2 8 z" fill="#00d18f"/>
+  <text class="t" x="352" y="108" font-size="11" fill="#00d18f">1) enciéndelo</text>
+
+  <!-- tarjeta de extensión -->
+  <rect x="20" y="120" width="600" height="86" rx="10" fill="#292a2d" stroke="#3c4043"/>
+  <rect x="36" y="140" width="48" height="48" rx="10" fill="#00d18f"/>
+  <text class="t" x="48" y="171" font-size="22" font-weight="700" fill="#04241a">W</text>
+  <text class="t" x="100" y="152" font-size="14" font-weight="600" fill="#e8eaed">Waivers Connect</text>
+  <text class="t" x="100" y="172" font-size="11" fill="#9aa0a6">Envía tu sesión de Sleeper a la app local. Un clic, sin copiar valores.</text>
+  <rect x="556" y="150" width="46" height="20" rx="10" fill="#3c4043"/>
+  <circle cx="566" cy="160" r="7" fill="#5f6368"/>
+  <text class="t" x="580" y="164" font-size="10" fill="#9aa0a6">off</text>
+
+  <!-- zona vacía -->
+  <rect x="20" y="220" width="600" height="60" rx="10" fill="#202124" stroke="#3c4043" stroke-dasharray="6 5"/>
+  <text class="t" x="40" y="256" font-size="12" fill="#80868b">Sin extensiones cargadas todavía.</text>
+
+  <text class="t" x="20" y="322" font-size="12" fill="#9aa0a6">Es la página de extensiones de tu navegador.</text>
+  <text class="t" x="20" y="344" font-size="12" fill="#9aa0a6">El interruptor de <tspan fill="#e8eaed">Modo de desarrollador</tspan> va arriba a la derecha.</text>
+  <text class="t" x="20" y="366" font-size="12" fill="#5f6368">(después aparece el botón para cargar la carpeta)</text>
+</svg>

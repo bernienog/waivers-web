@@ -1,0 +1,502 @@
+:root {
+  --bg: #0b0e17;
+  --panel: #151b2b;
+  --panel-2: #1c2440;
+  --text: #e8ecf4;
+  --muted: #8b93a7;
+  --green: #00d18f;
+  --red: #ff4d5e;
+  --amber: #ffb020;
+  --line: #2a3352;
+}
+
+* { box-sizing: border-box; }
+/* Base de botones. Sin esto, un <button> sin clase lo pinta el navegador
+   como botón de Windows (gris, bevel, foco azul) en medio de una app
+   oscura. TODOS los botones heredan esta base; .primary/.danger/
+   .iconbtn/.addbtn/.btnrow solo son modificadores. */
+button {
+  font: inherit; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 12px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+}
+button:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.primary {
+  background: var(--green); color: #04241a; border: 1px solid var(--green);
+  font-weight: 600;
+}
+.primary:hover:not(:disabled) { filter: brightness(1.12); color: #04241a; }
+.danger { color: var(--red); border-color: rgba(255, 77, 94, .4); }
+.danger:hover:not(:disabled) { background: var(--red); border-color: var(--red); color: #fff; }
+/* Fila de botones de un modal: centrada y con aire, no pegada a la
+   izquierda como una línea de texto. */
+.btnrow {
+  display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+}
+#root { max-width: 1400px; margin: 0 auto; padding: 16px; }
+.topbar {
+  display: flex; gap: 12px; align-items: center;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 16px; margin-bottom: 16px;
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar .tabs { margin-bottom: 0; }
+.topbar select { margin-left: auto; max-width: 420px; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.hub-cols { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+/* Hub nuevo: pros + watchlist en 2 columnas capeadas arriba,
+   ligas a full width debajo. */
+.hub-top { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; margin-bottom: 24px; }
+.cap-scroll { height: 520px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #2a3350 transparent; }
+.cap-scroll::-webkit-scrollbar { width: 8px; }
+.cap-scroll::-webkit-scrollbar-track { background: transparent; }
+.cap-scroll::-webkit-scrollbar-thumb { background: #2a3350; border-radius: 4px; }
+.cap-scroll::-webkit-scrollbar-thumb:hover { background: #3a4566; }
+.cap-scroll .panel { margin-bottom: 0; min-height: 100%; box-sizing: border-box; }
+/* Anoche: ventana fija de 3 filas con el mismo tratamiento de scroll. */
+.anoche-scroll { height: 180px; overflow-y: auto; margin-left: 16px; scrollbar-width: thin; scrollbar-color: #2a3350 transparent; }
+.anoche-scroll::-webkit-scrollbar { width: 8px; }
+.anoche-scroll::-webkit-scrollbar-track { background: transparent; }
+.anoche-scroll::-webkit-scrollbar-thumb { background: #2a3350; border-radius: 4px; }
+.anoche-scroll::-webkit-scrollbar-thumb:hover { background: #3a4566; }
+/* Pros wire: grid real para que header y filas compartan columnas. */
+/* Wire de FantasyPros: las columnas de stats se aprietan y la fila baja de
+   alto; lo que se recupera se va al nombre del jugador (el 1fr). La
+   columna del tag ($) NO se aprieta: ahí cabe "prio #14". */
+.fprow {
+  display: grid; gap: 6px; align-items: center;
+  grid-template-columns: 28px minmax(0,1fr) 32px 30px 42px 46px 124px 36px;
+  padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px;
+  margin-bottom: 6px; background: var(--panel-2); min-height: 44px;
+  font-size: 11px;
+}
+.fprow.head { min-height: 0; background: transparent; border-color: transparent; }
+.fprow .nm { display: flex; gap: 8px; align-items: center; overflow: hidden; }
+.fprow .nm > :first-child { flex-shrink: 0; }
+.fprow .nm > span:last-child {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fprow .c { text-align: center; }
+.fprow .btn { display: flex; justify-content: center; }
+.fprow .btn small { font-size: 11px; text-align: center; line-height: 1.25; }
+.modal .danger { padding: 8px 14px; }
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: var(--panel); border: 1px solid var(--green); color: var(--text);
+  border-radius: 10px; padding: 10px 18px; z-index: 100;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5); font-size: 14px;
+}
+.spinner {
+  display: inline-block; width: 14px; height: 14px; margin-right: 8px;
+  border: 2px solid rgba(4, 36, 26, 0.3); border-top-color: #04241a;
+  border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+/* Multibid: mismo verde con brillo. */
+.multibtn {
+  background: linear-gradient(135deg, #00d18f, #00a8cc);
+  color: #04241a; border: 0; border-radius: 8px; padding: 10px 14px;
+  cursor: pointer; font-weight: 800; font-size: 14px;
+}
+.multibtn:hover { filter: brightness(1.12); }
+.watchlink {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--green); font-size: 11px; white-space: nowrap;
+}
+.watchlink:disabled { color: var(--muted); cursor: default; }
+.cols .panel { margin-bottom: 0; }
+@media (max-width: 900px) { .cols { grid-template-columns: 1fr; } .hub-cols { grid-template-columns: 1fr; } .hub-top { grid-template-columns: 1fr; } }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.tabs button {
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.tabs button.active { color: var(--text); border-color: var(--green); }
+.badge { padding: 2px 8px; border-radius: 6px; font-size: 12px; }
+.badge.faab { background: #00382a; color: var(--green); }
+.badge.claim { background: #3a2b00; color: var(--amber); }
+.badge.ok { background: #00382a; color: var(--green); }
+.badge.bad { background: #3d0a12; color: var(--red); }
+.badge.warn { background: transparent; color: var(--amber); border: 1px solid var(--amber); }
+.row { display: flex; gap: 8px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; background: var(--panel-2); min-height: 52px; }
+.row .grow { flex: 1; }
+.stack { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.inline { display: inline-flex; align-items: center; gap: 6px; }
+.sub { font-size: 0.85em; color: var(--muted); }
+.emptystate { min-height: 52px; display: flex; align-items: center; }
+button.primary { background: var(--green); color: #04241a; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
+button.danger { background: transparent; color: var(--red); border: 1px solid var(--red); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-weight: 700; }
+.iconbtn {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px;
+  min-width: 34px; height: 34px; padding: 0 9px; cursor: pointer; font-size: 16px;
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.iconbtn:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+.addbtn {
+  background: var(--green); color: #04241a; border: 0; border-radius: 8px;
+  min-width: 34px; height: 34px; padding: 0 10px; cursor: pointer;
+  font-size: 18px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.addbtn:hover { filter: brightness(1.12); }
+/* Panel "estado": líneas con ✓/✗ alineadas, sin cajas raras. */
+.st-modal { max-width: 540px; }
+.st-lines { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
+.st-line { display: flex; align-items: center; gap: 10px; }
+.st-line > b { width: 14px; flex-shrink: 0; }
+/* Onboarding (virgen): página completa de conexión. Ocupa todo y respira;
+   el hub no existe detrás, así que no hay nada que compite por el ancho. */
+.ob { min-height: 100vh; background: var(--bg); }
+.ob-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 20px 32px; border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.ob-brand { display: flex; align-items: center; gap: 12px; }
+.ob-logo {
+  width: 40px; height: 40px; border-radius: 10px; background: var(--green);
+  color: #04241a; font-weight: 800; font-size: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.ob-brand strong { font-size: 18px; display: block; line-height: 1.1; }
+.ob-brand small { color: var(--muted); font-size: 12px; }
+.ob-body { max-width: 760px; margin: 0 auto; padding: 40px 32px 80px; }
+.ob-body h1 { font-size: 30px; margin: 0 0 10px; }
+.ob-lede { color: var(--muted); font-size: 14px; line-height: 1.7; margin: 0 0 36px; }
+.ob-step { display: flex; gap: 18px; margin-bottom: 34px; }
+.ob-num {
+  flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%;
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--green); font-weight: 700; font-size: 15px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.ob-main {
+  flex: 1; min-width: 0; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px;
+}
+.ob-main h2 { font-size: 17px; margin: 0 0 10px; }
+.ob-main p { color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px; }
+.ob-main code {
+  background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 12px;
+  word-break: break-all;
+}
+.ob-acts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.ob-hint { font-size: 12px; color: var(--muted); margin-top: 12px; }
+.ob-warn { color: var(--amber); }
+.ob-wait { color: var(--green); display: flex; align-items: center; gap: 8px; }
+.ob-spin {
+  width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--green);
+  animation: ob-spin .8s linear infinite;
+}
+@keyframes ob-spin { to { transform: rotate(360deg); } }
+.ob-list { margin: 0 0 12px; padding-left: 22px; color: var(--muted); font-size: 13px; line-height: 1.9; }
+.ob-list b { color: var(--text); }
+.ob-msg {
+  margin: 4px 0 0; padding: 12px 14px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--amber); font-size: 13px; word-break: break-word;
+}
+.ob-reqs {
+  margin-top: 40px; padding: 20px 22px; border-radius: 12px;
+  background: var(--panel); border: 1px solid var(--line);
+}
+.ob-reqs h3 { margin: 0 0 12px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.ob-reqs ul { list-style: none; margin: 0 0 12px; padding: 0; font-size: 13px; }
+.ob-reqs li { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.ob-reqs li > b { width: 12px; flex-shrink: 0; }
+.ob-reqs .muted { font-size: 11px; word-break: break-all; }
+.ob-foot { margin-top: 24px; display: flex; justify-content: center; }
+/* Las capturas del tutorial: centradas y contenidas. */
+.ob-shot { margin: 0 0 14px; }
+.ob-shot img {
+  display: block; width: 100%; height: auto; max-width: 560px;
+  border: 1px solid var(--line); border-radius: 10px; background: #1b1d21;
+}
+.ob-shot figcaption { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+.st-ok { color: var(--green); }
+.st-bad { color: var(--red); }
+.st-line .btnlight { padding: 4px 10px; font-size: 11px; flex-shrink: 0; }
+.st-modal hr { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
+.st-steps-title { font-size: 12px; color: var(--green); margin-bottom: 12px; }
+/* Los pasos son el cuerpo del modal: necesitan aire para leerse. Antes
+   iban en 1.6 con los li pegados y todo se veía amontonado. */
+.st-steps { margin: 0; padding-left: 22px; font-size: 13px; line-height: 1.75; }
+.st-steps li { margin-bottom: 12px; padding-left: 2px; }
+.st-steps li:last-child { margin-bottom: 0; }
+.st-steps code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+.st-msg { margin-top: 14px; color: var(--amber); }
+.st-foot { margin: 20px 0 8px; }
+/* Botón + lo que el usuario tiene que pegar a mano. */
+.st-paste {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 10px 0 0; padding: 9px 11px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+}
+.st-paste .url { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.st-paste .btnlight { padding: 3px 9px; font-size: 11px; }
+.st-note { margin: 8px 0 0; font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+/* Espejo de Sleeper: "en waivers" inline (no duplica la W del botón). */
+.wbadge { color: #b98bff; font-weight: 600; }
+/* Tabla de FAs: grid compartido entre encabezado y filas, así las
+   columnas caen EXACTAS unas sobre otras. */
+/* Todas las columnas FIJAS salvo el nombre (1fr): así avatar, columnas y
+   botones caen siempre en el mismo punto, trunque lo que trunque. Las
+   ocho de proyección van squeezed: lo que sobra se lo queda el nombre. */
+.fa-grid {
+  display: grid;
+  grid-template-columns: 22px minmax(120px, 1fr) 28px 20px 22px 15px 19px 22px
+                         15px 20px 26px 26px;
+  align-items: center; gap: 4px;
+}
+.fa-grid > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fa-head {
+  font-size: 9px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); opacity: .75; padding: 0 2px 2px; border-bottom: 1px solid var(--line);
+}
+.fa-head .c { text-align: right; }
+.fa-row { padding: 4px 2px; }
+.fa-row + .fa-row { border-top: 1px solid rgba(42, 51, 82, .5); }
+/* Fila en waivers: filo violeta + fondo apenas distinto (estado sin
+   repetir la letra W). */
+.fa-row.onw { box-shadow: inset 2px 0 0 #b98bff; background: rgba(185, 139, 255, .05); }
+.fa-row:hover { background: rgba(255, 255, 255, .03); }
+/* Nombre en dos líneas: el nombre no compite con el rival ni con las
+   columnas, y siempre cae en el mismo sitio (trunca si no cabe). */
+.fa-nm { display: flex; flex-direction: column; justify-content: center; }
+.fa-name { font-size: 12px; line-height: 1.25; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.fa-sub { font-size: 10px; line-height: 1.2; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fa-c { text-align: right; font-variant-numeric: tabular-nums; font-size: 10px;
+  color: var(--muted); }
+.fa-pts { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px;
+  font-weight: 700; color: var(--green); }
+/* Acciones de la fila FA: los mismos botones sobrios del resto (iconbtn),
+   no botones "de Windows". El + es el único que se enciende en verde. */
+.fa-act {
+  background: var(--panel-2); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 7px;
+  width: 26px; height: 26px; padding: 0; cursor: pointer; font-size: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0; line-height: 1;
+}
+.fa-act:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+.fa-act.add:hover:not(:disabled) {
+  background: var(--green); border-color: var(--green); color: #04241a;
+}
+/* W = claim: color de aviso + el día de 3 letras DEBAJO, misma celda. */
+.fa-act.claim { color: var(--amber); border-color: rgba(255, 176, 32, .45); }
+.fa-act.claim:hover:not(:disabled) {
+  background: var(--amber); border-color: var(--amber); color: #2a1c00;
+}
+.fa-act.star { font-size: 13px; }
+.fa-act.on { color: var(--amber); border-color: rgba(255, 176, 32, .45); }
+/* Celda del W: 2 filas (W / día) para no ensanchar la columna. */
+.fa-cell { display: flex; flex-direction: column; align-items: center;
+  gap: 2px; flex-shrink: 0; }
+.fa-cell .d { font-size: 8px; letter-spacing: .03em; color: var(--muted);
+  line-height: 1; }
+/* Botón de claim por waivers: un botón, con la fecha cuando la hay. */
+/* Columnas de proyección (ATT, RUSH YD/TD, REC REC/YD/TD, CMP). */
+.statstrip {
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+  font-variant-numeric: tabular-nums; font-size: 11px; color: var(--muted);
+}
+.statstrip .pts { color: var(--green); font-size: 13px; min-width: 30px;
+  text-align: right; }
+.statstrip span { min-width: 22px; text-align: right; }
+.btnlight {
+  background: #e8ecf4; color: #0b0e17; border: 0; border-radius: 8px;
+  padding: 8px 14px; cursor: pointer; font-weight: 600;
+}
+.btnlight:hover { filter: brightness(1.05); }
+.modal h3 { text-align: center; }
+.bidinput {
+  width: 5ch; text-align: center; font-size: 30px; font-weight: 700;
+  padding: 6px 4px;
+}
+.bidinput::-webkit-outer-spin-button, .bidinput::-webkit-inner-spin-button {
+  -webkit-appearance: none; margin: 0;
+}
+.bidinput[type='number'] { -moz-appearance: textfield; appearance: textfield; }
+input, select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px; }
+/* El <select> nativo trae flecha gris de Windows: la cambiamos por una
+   propia para que la lista desplegable se vea de la app. */
+.modal select, .topbar select {
+  appearance: none; -webkit-appearance: none;
+  padding: 9px 32px 9px 12px; cursor: pointer; width: 100%;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 55%, calc(100% - 13px) 55%;
+  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+}
+.modal select:hover, .topbar select:hover { border-color: var(--green); }
+.modal select option { background: var(--panel); color: var(--text); }
+/* Centrado del desplegable dentro del modal. */
+.pickfield { display: flex; flex-direction: column; align-items: center; gap: 6px;
+  margin-top: 14px; }
+.pickfield > small { align-self: flex-start; }
+.pickfield select { max-width: 320px; }
+/* Tarjeta del jugador en los modales de confirmar: 2 filas, foto + nombre
+   arriba, chip de posición + equipo abajo. */
+.pcard {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 14px; margin: 0 0 14px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+}
+.pcard .top { display: flex; align-items: center; gap: 10px; }
+.pcard .nm { font-size: 17px; font-weight: 600; }
+.pcard .bot { display: flex; align-items: center; gap: 8px; }
+small.muted { color: var(--muted); }
+details { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; }
+details summary { cursor: pointer; padding: 4px 0; }
+summary.lsum { display: flex; align-items: center; gap: 8px; list-style: none; }
+summary.lsum::-webkit-details-marker { display: none; }
+.lsum .spacer { flex: 1; }
+.linklike { background: none; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit; }
+.chev::after { content: '▸'; color: var(--muted); }
+details[open] .chev::after { content: '▾'; }
+.fab {
+  position: fixed; right: 24px; bottom: 24px; width: 56px; height: 56px;
+  border-radius: 50%; background: var(--green); color: #04241a;
+  font-size: 28px; font-weight: 700; border: 0; cursor: pointer; z-index: 40;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5); line-height: 1;
+}
+.pos {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 30px; height: 30px; border-radius: 8px; padding: 0 6px;
+  font-size: 12px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.pos-QB { background: #e5484d; }
+.pos-RB { background: #14b8a6; }
+.pos-WR { background: #3b82f6; }
+.pos-TE { background: #8b5cf6; }
+.pos-WRT { background: #f59e0b; }
+.pos-K { background: #6b7280; }
+.pos-DEF { background: #7f1d1d; }
+.pos-NA { background: #3a4358; }
+.avatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; background: var(--panel-2); flex-shrink: 0; vertical-align: middle; }
+.avatar-lg { width: 64px; height: 64px; }
+.fa-row .avatar { width: 22px; height: 22px; }
+/* Celda de avatar: siempre presente. Marcador para lo que no tiene foto. */
+.fa-av { display: flex; align-items: center; justify-content: center; }
+.fa-av-ph {
+  width: 22px; height: 22px; border-radius: 5px; display: flex;
+  align-items: center; justify-content: center; font-size: 9px;
+  font-weight: 700; color: var(--muted); background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.fp-detail p { margin: 8px 0; line-height: 1.45; }
+.add { color: var(--green); font-weight: 600; }
+.drop { color: var(--amber); }
+/* Estado vacío: centrado y apagado. Antes era una línea de texto pegada a
+   la izquierda, que se leía como un error y no como "aún no hay nada". */
+/* Botón ? con su explicacion flotante. */
+/* Enlace que se ve como botón: es lo que queda en modo navegador donde
+   no existe el comando de Tauri para lanzar otro navegador. */
+.btnlink {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 7px 12px; border-radius: 8px; text-decoration: none;
+  background: var(--green); color: #04241a; font-weight: 600;
+  border: 1px solid var(--green); font-size: 14px;
+}
+.btnlink:hover { filter: brightness(1.12); }
+.wire-cta {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 4px 0 12px;
+}
+.helpwrap { position: relative; display: inline-flex; }
+.helpon {
+  width: 20px; height: 20px; min-width: 20px; padding: 0;
+  border-radius: 50%; font-size: 12px; font-weight: 700;
+  color: var(--muted); background: transparent; border: 1px solid var(--line);
+}
+.helpon:hover { color: var(--green); border-color: var(--green); }
+.helpbox {
+  position: absolute; top: calc(100% + 8px); left: 50%;
+  transform: translateX(-50%); z-index: 40; width: 280px;
+  display: block; padding: 11px 13px; text-align: left;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .5);
+  font-size: 12px; line-height: 1.65; white-space: normal;
+}
+.helpbox b { color: var(--green); }
+.empty {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 6px;
+  padding: 28px 16px; text-align: center;
+  color: var(--muted); font-size: 12px;
+}
+.empty .hint { color: var(--muted); opacity: .75; font-size: 11px; }
+.loadbar {
+  position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 100;
+  background: transparent; overflow: hidden;
+}
+.loadbar > div {
+  height: 100%; width: 40%; background: var(--green); border-radius: 2px;
+  animation: loadslide 1.1s ease-in-out infinite;
+}
+/* Misma animación, anclada a la sección (no fixed). */
+.loadbar-inline { height: 3px; background: transparent; overflow: hidden; border-radius: 2px; }
+.loadbar-inline > div {
+  height: 100%; width: 40%; background: var(--green); border-radius: 2px;
+  animation: loadslide 1.1s ease-in-out infinite;
+}
+@keyframes loadslide {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}
+.skel {
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--panel-2) 25%, var(--line) 50%, var(--panel-2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+  flex-shrink: 0;
+}
+.skel.circle { border-radius: 50%; }
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.modal {
+  background: var(--panel); border: 1px solid var(--green);
+  border-radius: 12px; padding: 20px; min-width: 340px; max-width: 440px;
+  position: relative;
+}
+.modal-x {
+  position: absolute; top: 10px; right: 12px;
+  background: none; border: 0; padding: 4px 8px; cursor: pointer;
+  color: var(--muted); font-size: 20px; line-height: 1;
+}
+.modal-x:hover { color: var(--text); }

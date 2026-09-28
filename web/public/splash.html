@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Waivers</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0e17; color: #e8ecf4;
+    font-family: sans-serif; display: flex; align-items: center;
+    justify-content: center; }
+  /* Salida con fundido: el shell añade .done antes de cerrar. Sin esto
+     el corte es un parpadeo seco. */
+  body { transition: opacity .35s ease; }
+  body.done { opacity: 0; }
+  .card { text-align: center; max-width: 320px; }
+  .dot { width: 18px; height: 18px; margin: 0 auto 12px; border-radius: 50%;
+    background: #00d18f; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+  small { opacity: .6; }
+  /* Estado de error: el shell escribe aquí si el motor no levanta.
+     El splash se QUEDA con el mensaje: jamás parpadeo-y-muerte. */
+  #err { display: none; margin-top: 10px; color: #ff8a94; font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="dot"></div>
+    <div><strong>waivers</strong></div>
+    <small id="stage">conectando…</small>
+    <div id="err"></div>
+  </div>
+</body>
+</html>

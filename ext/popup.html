@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<style>
+  body { width: 300px; margin: 0; padding: 12px; background: #0b0e17;
+         color: #e8ecf4; font: 13px/1.45 sans-serif; }
+  h3 { margin: 0 0 8px; font-size: 14px; }
+  button { display: block; width: 100%; margin: 6px 0; padding: 9px;
+           border: 0; border-radius: 8px; font-size: 13px; cursor: pointer; }
+  #send { background: #00d18f; color: #0b0e17; font-weight: bold; }
+  #copy { background: #151b2b; color: #e8ecf4; border: 1px solid #333; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { min-height: 20px; margin-top: 8px; color: #9aa3b5; font-size: 12px; }
+  #status.ok { color: #00d18f; }
+  #status.bad { color: #ff4d5e; }
+  small { color: #9aa3b5; }
+</style>
+</head>
+<body>
+  <h3>Waivers Connect</h3>
+  <div><small>1) Abre la app Waivers &nbsp; 2) Inicia sesión abajo</small></div>
+  <button id="send">Enviar sesión a la app</button>
+  <button id="copy">Copiar JWT (manual)</button>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

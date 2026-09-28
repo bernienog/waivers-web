@@ -1,0 +1,36 @@
+# Credenciales. Nunca commitear: aca vive tu sesion de Sleeper.
+.env
+.env.*
+!.env.example
+
+# Datos locales del usuario: base, cache de ligas y de players. Todo esto
+# es de la maquina donde corrio, no del proyecto.
+data/
+players_nfl.json
+waiver.db
+waiver.db-wal
+waiver.db-shm
+
+# Builds
+/dist/
+/build/
+web/dist/
+web/node_modules/
+web/sidecar/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Ruido de trabajo
+logs/
+captures/
+*.har
+*.zip
+
+# Editores / SO
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

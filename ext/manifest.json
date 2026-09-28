@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Waivers Connect",
+  "version": "0.1.1",
+  "description": "Envía tu sesión de Sleeper a la app local Waivers. Un clic, sin copiar valores.",
+  "permissions": ["cookies", "scripting"],
+  "host_permissions": ["https://sleeper.com/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Waivers Connect"
+  }
+}

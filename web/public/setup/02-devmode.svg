@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 260" width="640" height="260" role="img" aria-label="El interruptor de Modo de desarrollador ya encendido, arriba a la derecha">
+  <style>
+    .t { font-family: 'Segoe UI', system-ui, sans-serif; }
+  </style>
+  <rect width="640" height="260" fill="#1b1d21"/>
+
+  <!-- zoom a la esquina superior derecha -->
+  <rect x="0" y="0" width="640" height="70" fill="#202124"/>
+  <text class="t" x="20" y="26" font-size="10" fill="#5f6368">chrome://extensions</text>
+
+  <rect x="330" y="20" width="290" height="34" rx="10" fill="#292a2d" stroke="#00d18f" stroke-width="2"/>
+  <text class="t" x="348" y="42" font-size="14" fill="#e8eaed">Modo de desarrollador</text>
+  <!-- interruptor ENCENDIDO: azul + knob a la derecha -->
+  <rect x="566" y="27" width="44" height="20" rx="10" fill="#8ab4f8"/>
+  <circle cx="600" cy="37" r="8" fill="#ffffff"/>
+
+  <path d="M300 120 C300 92 340 80 356 76" fill="none" stroke="#00d18f" stroke-width="2.5" stroke-dasharray="5 4"/>
+  <path d="M356 76 l-10 -2 l3 9 z" fill="#00d18f"/>
+  <text class="t" x="150" y="140" font-size="13" fill="#00d18f">2) enciéndelo (se pone azul)</text>
+
+  <text class="t" x="20" y="180" font-size="12" fill="#9aa0a6">Cuando está encendido, Chrome muestra una barra azul arriba</text>
+  <text class="t" x="20" y="202" font-size="12" fill="#9aa0a6">con el botón <tspan fill="#e8eaed">Cargar descomprimida</tspan>.</text>
+  <text class="t" x="20" y="232" font-size="11" fill="#5f6368">En Edge se llama "Modo de desarrollador" también; la posición es igual.</text>
+</svg>

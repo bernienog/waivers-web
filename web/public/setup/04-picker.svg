@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img" aria-label="La ventana para elegir la carpeta, con la carpeta de la extensión seleccionada">
+  <style>
+    .t { font-family: 'Segoe UI', system-ui, sans-serif; }
+  </style>
+  <rect width="640" height="300" fill="#1b1d21"/>
+  <rect x="40" y="20" width="560" height="260" rx="8" fill="#202124" stroke="#3c4043"/>
+
+  <!-- título -->
+  <text class="t" x="60" y="50" font-size="13" fill="#e8eaed">Selecciona la carpeta de la extensión</text>
+  <rect x="540" y="38" width="40" height="26" rx="5" fill="#3c4043"/>
+  <path d="M554 45 l12 12 M566 45 l-12 12" stroke="#e8eaed" stroke-width="1.6"/>
+
+  <!-- barra de ruta -->
+  <rect x="60" y="66" width="420" height="26" rx="5" fill="#292a2d" stroke="#5f6368"/>
+  <text class="t" x="72" y="83" font-size="11" fill="#9aa0a6">Documentos  ›  Waivers Connect</text>
+  <text class="t" x="60" y="112" font-size="11" fill="#5f6368">Si no la ves, usa el botón "copiar ruta" de la app y pégala aquí.</text>
+
+  <!-- lista -->
+  <rect x="60" y="124" width="300" height="96" fill="#292a2d" stroke="#3c4043"/>
+  <rect x="60" y="150" width="300" height="24" fill="#1a3a5c"/>
+  <text class="t" x="76" y="167" font-size="12" fill="#8ab4f8">📁  Waivers Connect</text>
+  <text class="t" x="76" y="196" font-size="11" fill="#80868b">📁  Documentos</text>
+
+  <!-- vista previa: manifest.json presente -->
+  <rect x="376" y="124" width="204" height="96" fill="#292a2d" stroke="#3c4043"/>
+  <text class="t" x="392" y="146" font-size="11" fill="#9aa0a6">Debes ver:</text>
+  <text class="t" x="392" y="168" font-size="11" fill="#e8eaed">manifest.json</text>
+  <text class="t" x="392" y="188" font-size="11" fill="#e8eaed">popup.html</text>
+  <text class="t" x="392" y="208" font-size="11" fill="#e8eaed">background.js</text>
+
+  <!-- acción -->
+  <rect x="440" y="238" width="140" height="30" rx="5" fill="#8ab4f8"/>
+  <text class="t" x="470" y="258" font-size="12" font-weight="600" fill="#06243f">Seleccionar carpeta</text>
+
+  <text class="t" x="60" y="248" font-size="12" fill="#9aa0a6">4) elige la carpeta y acepta.</text>
+  <text class="t" x="40" y="292" font-size="11" fill="#5f6368">Si seleccionas una carpeta equivocada, Chrome se queja y no pasa nada: no rompes nada.</text>
+</svg>
