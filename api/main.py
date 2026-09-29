@@ -65,7 +65,7 @@ async def _unhandled(request: Request, exc: Exception):
 
 # Versión del backend (health + footer UI): la única forma de saber qué
 # build corre tras un reinstall (NSIS salta archivos bloqueados).
-APP_VERSION = "0.1.34"
+APP_VERSION = "0.1.35"
 def _uid():
     """User id dinámico (el wizard lo guarda sin reinicio)."""
     return os.environ.get("SLEEPER_USER_ID", "")
