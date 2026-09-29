@@ -193,6 +193,15 @@ def cache_stats():
             "display_ttl_s": _BUNDLE_DISPLAY_TTL}
 
 
+def clear_process_caches():
+    """Vacía los memos de proceso. Los llama la API cuando cambia la
+    cuenta de Sleeper: son claves por league_id, no por cuenta, así que
+    un cambio de usuario deja datos del anterior en memoria hasta que
+    expire el TTL."""
+    _BUNDLE_DISPLAY.clear()
+    _ROSTER_ID_MEMO.clear()
+
+
 # roster_id es estable toda la temporada (solo cambia si sales/entras de
 # la liga): memo de proceso, evita un get_rosters por refresh.
 _ROSTER_ID_MEMO: dict = {}

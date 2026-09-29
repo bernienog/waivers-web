@@ -463,18 +463,90 @@ def _league_row(x, _bundle=None):
             "roster_space": pub.roster_space(lgfull, roster)}
 
 
-def _league_snapshot_write(rows):
+def _season_default():
+    """Temporada NFL vigente, si el usuario no puso SEASON en .env.
+
+    La temporada N no termina en enero: sigue hasta abril, con el draft.
+    Es abril-dentro y el fantasy sigue siendo 2026, y por ahi es cuando se
+    resetea el FAAB. Recien en mayo empieza la 2027. Ese "hasta abril" es
+    el dato: con un `if month < 3` (que es lo que se escribe por reflejo)
+    en enero-marzo se apunta a la temporada equivocada y `get_leagues`
+    devuelve [] -> el import cae en "no devuelve ligas" y culpa a la
+    cuenta del usuario en vez de a la constante.
+
+    Importa sobre todo en dynasty; en redraft la siguiente liga ya nace
+    con el anio nuevo. `.env` manda siempre si hay SEASON ahi."""
+    import datetime
+    now = datetime.datetime.now()
+    return str(now.year if now.month >= 5 else now.year - 1)
+
+
+def _season():
+    """SEASON de .env, o la vigente."""
+    return str(os.environ.get("SEASON") or _season_default())
+
+
+def _purge_account_caches():
+    """Borra TODO lo cacheado de la cuenta anterior.
+
+    El cache es display y local, pero ninguna de esas tablas lleva el
+    user id: `leagues_cache`, `rosters_cache` y `league_snapshot` se
+    clonaron por `league_id`, y `league_snapshot` ademas no se podaba (solo
+    INSERT OR REPLACE, nunca borraba las que salian de la lista). Asi que
+    cambiar de cuenta Sleeper en el mismo data dir dejaba la lista del
+    primero servida al segundo cuando la lectura publica fallaba, con
+    `stale: true` y todo. Datos que cruzan de una cuenta a otra: es el
+    mismo tipo de fuga que se cerro en los mensajes de error, pero por el
+    camino del fallback local.
+
+    Los claims, la watchlist y el wire NO se tocan: son de la persona que
+    esta usando la maquina, no de la cuenta de Sleeper."""
+    try:
+        cx = connect()
+        for tabla in ("league_snapshot", "leagues_cache", "rosters_cache"):
+            cx.execute(f"DELETE FROM {tabla}")
+        cx.commit()
+        cx.close()
+    except Exception as e:
+        # Purgar es defensa en profundidad: si falla, el snapshot igual
+        # queda scoped por uid (ver _league_snapshot_read).
+        print(f"[auth] no pude purgar el cache: {e!r}", file=sys.stderr)
+    _CLEARS_CACHE.clear()
+    try:
+        pub.clear_process_caches()
+    except Exception as e:
+        print(f"[auth] no pude limpiar el cache en memoria: {e!r}",
+              file=sys.stderr)
+
+
+def _league_snapshot_write(rows, uid):
     """Guarda la última lista buena en SQLite. Es el plan B para cuando
-    Sleeper no responde (solo lectura: nunca se finge que un writer corrió)."""
+    Sleeper no responde (solo lectura: nunca se finge que un writer corrió).
+
+    Scopada por cuenta: `uid` va en su propia columna y la lectura filtra
+    por el. Y ahora PODA: las ligas que ya no estan en la lista se borran,
+    porque si no un snapshot de hace semanas revivía una liga de la que
+    te sacaron cada vez que Sleeper caía."""
     try:
         cx = connect()
         cx.execute("CREATE TABLE IF NOT EXISTS league_snapshot ("
                    "league_id TEXT PRIMARY KEY, payload TEXT NOT NULL, "
                    "synced_at INTEGER NOT NULL)")
+        cols = [r[1] for r in cx.execute("PRAGMA table_info(league_snapshot)")]
+        if "uid" not in cols:
+            cx.execute("ALTER TABLE league_snapshot ADD COLUMN uid TEXT")
         now = int(time.time() * 1000)
+        keep = []
         for r in rows:
-            cx.execute("INSERT OR REPLACE INTO league_snapshot VALUES (?,?,?)",
-                       (r["league_id"], _json.dumps(r), now))
+            cx.execute("INSERT OR REPLACE INTO league_snapshot "
+                       "(league_id, payload, synced_at, uid) VALUES (?,?,?,?)",
+                       (r["league_id"], _json.dumps(r), now, str(uid or "")))
+            keep.append(r["league_id"])
+        if keep:
+            cx.execute("DELETE FROM league_snapshot WHERE league_id NOT IN "
+                       "(" + ",".join("?" * len(keep)) + ")", keep)
+        else:
+            cx.execute("DELETE FROM league_snapshot")
         cx.commit()
         cx.close()
     except Exception as e:
@@ -483,10 +555,16 @@ def _league_snapshot_write(rows):
         print(f"[leagues] no pude guardar el snapshot: {e!r}", file=sys.stderr)
 
 
-def _league_snapshot_read():
+def _league_snapshot_read(uid):
+    """Snapshot del snapshot SOLO de esta cuenta.
+
+    Filma por uid. Las filas viejas (sin uid) no matchean y quedan como
+    no estar: una instalacion previa pierde su fallback offline, que es la
+    direccion segura, en vez de servir el snapshot de otro."""
     try:
         cx = connect()
-        got = cx.execute("SELECT payload FROM league_snapshot").fetchall()
+        got = cx.execute("SELECT payload FROM league_snapshot WHERE uid = ?",
+                         (str(uid or ""),)).fetchall()
         cx.close()
         return [_json.loads(r["payload"]) for r in got]
     except Exception:
@@ -501,7 +579,7 @@ def leagues():
     `stale: true`) en vez de un error: ver tus ligas es lo mínimo que la app
     debe poder hacer sin red. La UI marca las de caché para que nadie
     decida con un dato viejo sin saberlo."""
-    season = os.environ.get("SEASON", "2026")
+    season = _season()
     uid = os.environ.get("SLEEPER_USER_ID", "")  # dinámico: el wizard
     if not uid:  # virgen/conectar pendiente: lista vacía, jamás 500
         return {"leagues": [], "stale": False}
@@ -509,7 +587,7 @@ def leagues():
         all_leagues = [x for x in pub.get_leagues(uid, season)
                        if (x.get("sport") or "nfl") == "nfl"]
     except Exception as e:
-        snap = _league_snapshot_read()
+        snap = _league_snapshot_read(uid)
         if snap:
             print(f"[leagues] Sleeper no respondió, sirviendo snapshot "
                   f"de {len(snap)} ligas: {e!r}", file=sys.stderr)
@@ -518,7 +596,7 @@ def leagues():
     # Paralelo por liga: mismos calls que antes, ~4x más rápido en cold start.
     with ThreadPoolExecutor(max_workers=4) as ex:
         rows = list(ex.map(_league_row, all_leagues))
-    _league_snapshot_write(rows)
+    _league_snapshot_write(rows, uid)
     return {"leagues": rows, "stale": False}
 
 
@@ -784,7 +862,7 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
             if ql and ql not in (v.get("name") or "").lower():
                 continue
             out.append({"player_id": pid, "clears_at": clears.get(pid), **v})
-    season = str(os.environ.get("SEASON", "2026"))
+    season = _season()
     # Puntos = stats × scoring de LA LIGA (público). Sin esto, sortea por
     # `pts_ppr` que es scoring estándar y no coincide con la UI.
     try:
@@ -1103,6 +1181,10 @@ def auth_save(body: AuthSave):
     want = {"SLEEPER_JWT": jwt, "SLEEPER_SESSION": session}
     if uid:
         want["SLEEPER_USER_ID"] = uid
+    # Mismo guardia que /auth/import: antes de que _write_env pise el uid.
+    prev = os.environ.get("SLEEPER_USER_ID", "")
+    if prev and uid and prev != str(uid):
+        _purge_account_caches()
     _write_env(want)
     return {"ok": True, "jwt": _jwt_status()}
 
@@ -1134,13 +1216,18 @@ def _prove_and_save(jwt, session, uid):
     """Prueba viva (1 read público + 1 privado) y guardado en .env +
     environ. La usa /auth/import. Retorna #ligas."""
     try:
-        season = os.environ.get("SEASON", "2026")
+        season = _season()
         leagues = [x for x in pub.get_leagues(uid, season)
                    if (x.get("sport") or "nfl") == "nfl"]
     except Exception as e:
         fail(E_TOKEN, "El token funcionó pero no pude leer tus ligas.", e)
     if not leagues:
-        err("Sleeper no devuelve ligas para ese usuario", 422)
+        # La cuenta puede estar bien y la temporada apuntando a la que no
+        # es: en `/leagues/nfl/{season}` una temporada equivocada devuelve []
+        # y no un error, así que sin esto el mensaje culpa a la cuenta.
+        err(f"No encontré ligas NFL en la temporada {season}. Si estás en "
+            f"offseason o tu liga es de otro año, pon SEASON=<año> en .env.",
+            422)
     lid = leagues[0]["league_id"]
     try:
         rid = pub.find_roster_id(lid, uid)
@@ -1148,6 +1235,11 @@ def _prove_and_save(jwt, session, uid):
                                timeout=20, narrow=True)
     except Exception as e:
         fail(E_TOKEN, "Sleeper no aceptó ese token. Vuelve a iniciar sesión en sleeper.com.", e)
+    # Antes de _write_env: ahí os.environ ya quedó con el uid nuevo y la
+    # comparación "cambió la cuenta?" nunca dispararía.
+    prev = os.environ.get("SLEEPER_USER_ID", "")
+    if prev and prev != str(uid):
+        _purge_account_caches()
     _write_env({"SLEEPER_JWT": jwt, "SLEEPER_SESSION": session,
                 "SLEEPER_USER_ID": uid})
     return len(leagues)
