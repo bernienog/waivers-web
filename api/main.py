@@ -86,7 +86,7 @@ async def _unhandled(request: Request, exc: Exception):
 
 # Versión del backend (health + footer UI): la única forma de saber qué
 # build corre tras un reinstall (NSIS salta archivos bloqueados).
-APP_VERSION = "0.1.37"
+APP_VERSION = "0.1.38"
 def _uid():
     """User id dinámico (el wizard lo guarda sin reinicio)."""
     return os.environ.get("SLEEPER_USER_ID", "")
@@ -873,7 +873,8 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
     # por jugador: LeaguePlayer tiene 4 campos y el schema no tiene una
     # query de waivers). Es la misma regla que usa la UI de Sleeper para
     # pintar "W Wed" en todo el pool, leída de los settings de la liga.
-    win = pub.waiver_window(lg_full.get("settings") or {})
+    win = pub.waiver_window(lg_full.get("settings") or {},
+                                 league_id=league_id)
     out = []
     for pid, v in pmap.items():
         if pid in taken:
