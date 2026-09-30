@@ -83,11 +83,14 @@ export default function FreeAgentsPanel({ leagueId, tick, active, onAdd, onPicku
   // carrera. El timer vive en ref para cancelarlo al desmontar.
   const searchTimer = useRef<number | null>(null);
   const searchSeq = useRef(0);
+  // ¿Ya hicimos la carga "fresh" de esta liga? Solo la primera: es la que
+  // ignora el cache de 30s para que el badge W/+ sea correcto al abrir.
+  const freshDone = useRef(false);
 
-  async function load(query = q, p = pos, s = sort, seq = searchSeq.current) {
+  async function load(query = q, p = pos, s = sort, seq = searchSeq.current, fresh = false) {
     setLoading(true);
     try {
-      const r = await api.freeAgents(leagueId, query, p === 'ALL' ? '' : p, 20, s);
+      const r = await api.freeAgents(leagueId, query, p === 'ALL' ? '' : p, 20, s, fresh);
       if (searchSeq.current !== seq) return;
       setFaErr('');
       setList(r);
@@ -127,14 +130,19 @@ export default function FreeAgentsPanel({ leagueId, tick, active, onAdd, onPicku
     } catch { /* noop */ }
   }
 
-  // Reset de búsqueda solo al cambiar de liga (antes el tick global
+// Reset de búsqueda solo al cambiar de liga (antes el tick global
   // borraba lo que estabas escribiendo). Gateado: oculto no fetchea;
-  // al volver, el tick coalescado recarga.
-  useEffect(() => { setQ(''); setPos('ALL'); }, [leagueId]); // eslint-disable-line
+  // al volver, el tick coalescido recarga.
+  useEffect(() => { setQ(''); setPos('ALL'); freshDone.current = false; }, [leagueId]); // eslint-disable-line
   useEffect(() => {
     if (!active) return;
     searchSeq.current += 1;
-    void load('', 'ALL', sort, searchSeq.current);
+    // La PRIMERA apertura del panel va con fresh=1 para que el W/+ salga
+    // bien desde el primer render. Después el cache de 30s del backend
+    // alcanza y cada repintado no pega un poke extra a Sleeper.
+    const fresh = !freshDone.current;
+    freshDone.current = true;
+    void load('', 'ALL', sort, searchSeq.current, fresh);
     void loadWatched();
     return () => {
       if (searchTimer.current !== null) window.clearTimeout(searchTimer.current);

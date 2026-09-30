@@ -122,11 +122,15 @@ export const api = {
       (fresh || past ? `?fresh=${fresh ? 1 : 0}&past=${past ? 1 : 0}` : '')),
   roster: (id: string) => req<{ roster_id: number; players: { player_id: string; name: string; pos?: string; team?: string }[]; taxi: string[]; reserve: string[] }>('/leagues/' + id + '/roster'),
   /** Agentes libres con filtros. Antes lo hacía un fetch a mano en el panel
-   *  y se saltaba el saneo de errores: todo pasa por `req()`. */
-  freeAgents: (league_id: string, q: string, pos: string, limit: number, sort: string) =>
+   *  y se saltaba el saneo de errores: todo pasa por `req()`.
+   *
+   *  `fresh` ignora el cache de 30s de la señal de resolución de waivers.
+   *  La PRIMERA carga de Mis Ligas lo manda para que el W/+ salga bien desde
+   *  el primer render; después va false y el cache evita un poke por fila. */
+  freeAgents: (league_id: string, q: string, pos: string, limit: number, sort: string, fresh = false) =>
     req<import('./components/FreeAgentsPanel').FA[]>(
       `/free-agents/${league_id}?q=${encodeURIComponent(q)}&pos=${pos}` +
-      `&limit=${limit}&sort=${sort}`),
+      `&limit=${limit}&sort=${sort}${fresh ? '&fresh=1' : ''}`),
   /** Add LIBRE de agente libre: al instante, sin pending que cancelar. */
   pickup: (league_id: string, player_id: string, drop_player_id = '') =>
     req<{ ok: boolean; id: number; transaction_id: string | null }>(

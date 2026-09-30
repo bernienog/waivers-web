@@ -128,6 +128,48 @@ def get_rosters(league_id):
     return r.json()
 
 
+# Cuando el pool de free agents se destraba. La senal de verdad es el
+# status_updated del ultimo lote de waivers (ver
+# sleeper_private.newest_waiver_resolution): no hay constante ni margen, se
+# lee el evento. Esta capa solo cachea para no pegarle a Sleeper dos veces
+# por render.
+_WAIVER_TTL = 30  # s. Corto a proposito: la ventana tiene que abrir al toque.
+_WAIVER_CACHE: dict = {}  # league_id -> (epoch_s, ms|0)
+
+
+def newest_waiver_cached(league_id, fresh=False, _now=None):
+    """Ultimo lote de waivers resuelto por la liga, en ms. 0 = nunca hubo.
+
+    `fresh=True` se usa en la PRIMERA carga de Mis Ligueas para que el W o el
+    + salga bien desde el primer render: con 30s de cache, un usuario que
+    acaba de abrir la app veria el estado anterior hasta que expire. Despues
+    del primer render 30s alcanza y evita un poke por liga cada vez que se
+    repinta una fila.
+
+    Nunca lanza: si falta el JWT o Sleeper falla se devuelve el valor viejo
+    (o 0) y `waiver_window` cae a la cadencia, que es el camino conocido.
+    """
+    now = _now if _now is not None else time.time()
+    hit = _WAIVER_CACHE.get(str(league_id))
+    if hit and not fresh and now - hit[0] < _WAIVER_TTL:
+        return hit[1]
+    try:
+        from . import sleeper_private as priv
+        ms = priv.newest_waiver_resolution(league_id)
+    except Exception:
+        ms = hit[1] if hit else 0
+    _WAIVER_CACHE[str(league_id)] = (now, ms)
+    return ms
+
+
+def bust_waiver_cache(league_id=None):
+    """Reventa la senal de resolucion (writers: send/cancel/update/reorder)."""
+    if league_id is None:
+        _WAIVER_CACHE.clear()
+    else:
+        _WAIVER_CACHE.pop(str(league_id), None)
+
+
 def get_transactions(league_id, week):
     r = sleeper_get(f"{BASE}/league/{league_id}/transactions/{int(week)}",
                     timeout=20)
@@ -278,157 +320,161 @@ def _process_hour(settings, at=None):
     return (h - _pacific_offset(at)) % 24
 
 
-def waiver_window(settings: dict, league_id=None, now_ms: int = None):
-    """Ventana de waivers de la LIGA: ¿el pool está bloqueado?
+def _process_days(s):
+    """Dias de la semana en que la liga procesa waivers.
 
-    Qué SÍ sabemos de Sleeper, y qué no (verificado con introspección del
-    GraphQL y con un HAR de la UI de Sleeper):
+    `daily_waivers_days` es una MASCARA DE PASO 2, no de paso 1: cada dia de
+    la semana ocupa el bit `dia*2` y los bits impares no los usa ninguna liga.
+    Verificado en las 5 ligas de un HAR de la UI de Sleeper (2026-09-30):
+    Dynasty 5461 -> bits 0,2,4,6,8,10,12 -> los 7 dias; Chopped 1364 ->
+    2,4,6,8,10 -> mar-sab; Juantasy 1092 -> 2,6,10 -> mar/jue/sab. Ni un
+    solo bit impar en ninguna. Leerla con paso 1 daba conjuntos plausibles
+    pero falsos (Dynasty salia [lun,mie,vie,dom] en vez de los 7 dias), y
+    por eso el error no se veía a simple vista.
 
-    - NO existe un status por jugador. `LeaguePlayer` tiene 4 campos
-      (`metadata`, `settings`, `player_id`, `league_id`) y de 244 queries
-      del schema ninguna habla de waivers.
-    - `LeaguePlayer.settings.waiver_clears_at` es un REGISTRO de cuándo
-      resolvió cada waiver (en el HAR, 104 valores, todos en el pasado),
-      no un calendario. solo  sirve para el jugador con un waiver vivo.
-    - `/stats/nfl/{season}/{week}` viene VACÍO (la propia UI de Sleeper
-      recibió 2 bytes), así que "jugó la semana pasada" no se puede leer.
+    Sin diarias (`daily_waivers == 0`) procesa el dia de "Clear Waivers",
+    que es `waiver_day_of_week`.
+    """
+    raw = (s or {}).get("daily_waivers_days")
+    try:
+        mask = int(raw) if raw is not None and raw != "" else 0
+    except (TypeError, ValueError):
+        mask = 0
+    days = {b // 2 for b in range(14) if mask & (1 << b)}
+    if not days:
+        # Sin mascara legible se usa el dia de Clear Waivers (0=lunes).
+        dow = (s or {}).get("waiver_day_of_week")
+        try:
+            days = {int(dow)} if dow is not None and dow != "" else {0}
+        except (TypeError, ValueError):
+            days = {0}
+    return {d % 7 for d in days}
 
-    Lo que sí queda es la regla de la liga, y está en sus settings:
-    `waiver_day_of_week` (día que procesa) y `waiver_clear_days` (cuántos
-    días dura el lock). Con eso: el pool queda bloqueado desde que se juega
-    hasta que la liga procesa, y libre durante los `waiver_clear_days`
-    días siguientes. Eso es lo que la UI de Sleeper calcula por su cuenta
-    para pintar el "W Wed" del pool entero.
 
-    Se aplica por LIGA y no por jugador: durante la ventana no hay + para
-    nadie, porque no sabemos quiénmitter. Cuando el jugador además trae
-    `clears_at` propio, manda ese (Achane: lo dropearon hoy y resuelve en
-    dos días, no el miércoles como el resto).
+def waiver_window(settings: dict, league_id=None, now_ms: int = None,
+                  newest_waiver_ms: int = None, live_clears: int = 0):
+    """¿El pool de free agents de la liga esta bloqueado (W) o libre (+)?
 
-    Devuelve {locked, unknown, until_ms, day, reason}. Ante duda
-    (`unknown`, settings sin día de waivers) NO se afirma que esté libre:
-    devuelve unknown y la ruta decide."""
+    La regla de Sleeper es una sola y es la de su propia UI: el pool esta
+    bloqueado mientras haya waivers VIVOS, y libre cuando no hay ninguno.
+    "W Wed" no es un calendario, es "hay gente en waivers". Eso se lee de
+    dos cosas, y las dos estan en los datos:
+
+    1. `waiver_clears_at` por jugador (el "Waiver Time": "Players stay on
+       the waivers for 1 day"). Solo aplica DESPUES de un drop; para el
+       resto son historia. Viene en SEGUNDOS y `_to_ms` lo pasa a ms.
+       `live_clears` es cuantos hay con el valor en el futuro. Dynasty
+       tenia 5 al capturar el HAR del 2026-09-30, y por eso salia W.
+
+    2. `status_updated` del ultimo lote de waivers. Sleeper encola a la
+       hora exacta pero tarda unos minutos en resolver porque procesa
+       liga por liga: medido en vivo, lote encolado entre 04:40 y 07:32
+       UTC y TODAS sus transacciones con el MISMO `status_updated`,
+       11:04:56, contra las 11:00 en punto del calendario. Mientras now
+       sea menor, el lote sigue en la cola.
+
+    Los settings de la liga NO deciden si el pool esta libre; deciden
+    CUANDO resuelve cada drop, y son tres cosas distintas que se
+    confundian:
+
+    - "Custom Daily Waivers" -> `daily_waivers_days` (mascara de PASO 2:
+      bit `dia*2`) + `daily_waivers_hour` (hora PACIFICA, `_process_hour`).
+      Dynasty trae 5461 = los 7 dias, y su UI los lista uno por uno.
+    - "Clear Waivers" -> `waiver_day_of_week` = INICIO DE SEMANA. Vale 2
+      en las 5 ligas de un HAR porque es el default; solo se usa con
+      `daily_waivers` apagado.
+    - "Waiver Time" -> `waiver_clear_days` = por jugador, post drop.
+
+    Asi que si no hay waivers vivos y el lote ya resolvio, el pool esta
+    libre: NO se inventa una ventana por reloj. Antes se calculaba
+    `free_until = last + waiver_clear_days` y salia "+" en ligas que no
+    abren free agency nunca, que era el bug.
+
+    `next_run_ms` (proximo proceso segun la mascara) es informativo: sale
+    en la respuesta para que la UI pueda decir cuando abre la ventana.
+
+    `live_clears=None` significa "no se pudo medir" (falta el JWT o fallo
+    Sleeper) y es DISTINTO de `0`. Con `None` no se afirma que el pool este
+    libre: sale `unknown`. Ese matiz importa, porque si no, un JWT faltante
+    se traduce en un `+` para todo el pool, que es el error caro.
+
+    Devuelve {locked, unknown, until_ms, day, reason, next_run_ms}.
+    Sin settings ni senal alguna devuelve `unknown` en vez de afirmar.
+    """
     import datetime as dt
     import time as _t
     s = settings or {}
     now = now_ms if now_ms is not None else int(_t.time() * 1000)
 
-    def _int(k, d=0):
-        # OJO: NO `s.get(k, d) or d`. En Python `0 or 2` da 2, asi que un
-        # setting que vale 0 de verdad (Chopped trae waiver_clear_days=0)
-        # se leia como el default. Un `or` asi se come los ceros.
-        v = s.get(k)
-        if v is None or v == "":
-            return d
-        try:
-            return int(v)
-        except (TypeError, ValueError):
-            return d
-
+    hay_regla = bool(s) and (s.get("daily_waivers_days") is not None
+                            or s.get("waiver_day_of_week") is not None)
+    newest = 0
     try:
-        border_h = int(os.environ.get("WAIVER_BORDER_H", "6") or 6)
-    except ValueError:
-        border_h = 6
+        newest = int(newest_waiver_ms or 0)
+    except (TypeError, ValueError):
+        newest = 0
+    # `None` = no se pudo medir. `0` = medido, no hay ninguno. La diferencia
+    # evita el fail-open: sin JWT, `clears` viene vacio y sin esto diria
+    # "+" para todo el pool.
+    clears_medidos = live_clears is not None
     try:
-        grace_min = int(os.environ.get("WAIVER_GRACE_MIN", "30") or 30)
-    except ValueError:
-        grace_min = 30
+        vivos = int(live_clears) if clears_medidos else 0
+    except (TypeError, ValueError):
+        clears_medidos = False
+        vivos = 0
 
-    # Sin los settings NO hay regla. Se dice "no se" en vez de inventar:
-    # inventar fue lo queFxjo que devuelva "libre" y ofrecía el +.
-    if not s or s.get("waiver_day_of_week") is None:
+    # (1) Lote encolado y todavia sin resolver. Se lee el evento, no se
+    # calcula con una constante: por eso no hay WAIVER_BORDER_H ni gracia
+    # adivinada. La gracia de 30 min queda solo como red si el lote nunca
+    # llego a existir.
+    if newest > now:
+        return {"locked": True, "unknown": False, "until_ms": newest,
+                "day": None, "next_run_ms": 0,
+                "reason": "Sleeper todavia no termina de procesar waivers"}
+
+    # (2) Hay waivers vivos: el pool va con W, como en la UI de Sleeper.
+    if vivos > 0:
+        return {"locked": True, "unknown": False, "until_ms": 0,
+                "day": None, "next_run_ms": 0,
+                "reason": ("%d jugador(es) en waivers" % vivos) if vivos > 1
+                else "1 jugador en waivers"}
+
+    # (3) Ni waivers vivos ni lote pendiente: libre, PERO solo si realmente se
+    # pudieron medir los clears. Si no se pudieron, no se afirma nada.
+    if not clears_medidos or not hay_regla:
         return {"locked": False, "unknown": True, "until_ms": 0, "day": None,
-                "reason": "no se pudo leer el día de waivers de la liga"}
+                "next_run_ms": 0,
+                "reason": "no se pudo leer la regla de waivers de la liga"
+                if not hay_regla else
+                "no se pudieron leer los waivers en curso"}
 
-        # Hora de proceso: la de la liga, en Pacifico -> UTC (ver _process_hour).
-    # Los dias que corre: en diaria la mascara, en semanal el dia de
-    # "Clear Waivers" (que es `waiver_day_of_week`, y coincide con lo que
-    # el UI de Sleeper llama "Clear Waivers: <dia> (<hora>)").
+    try:
+        dow = int(s.get("waiver_day_of_week") or 0)
+    except (TypeError, ValueError):
+        dow = 0
     hour = _process_hour(s, at=dt.datetime.fromtimestamp(
         now / 1000, dt.timezone.utc))
-    day = _int("waiver_day_of_week", 0)   # 0=lunes (esta liga trae 2 y la
-                                         # UI de Sleeper muestra "W Wed")
 
     tz = _waiver_tz()
     now_dt = dt.datetime.fromtimestamp(now / 1000, tz)
     today = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    offset = now_dt.weekday()          # lunes=0 ... domingo=6
-    grace = dt.timedelta(minutes=max(0, grace_min))
-    clear_days = _int("waiver_clear_days", 2)
 
     def _ms(d):
         return int(d.timestamp() * 1000)
 
-    def _run_at(d, h=hour):
-        return d.replace(hour=h % 24, minute=0, second=0, microsecond=0)
-
-    if _int("daily_waivers"):
-        mask = _int("daily_waivers_days", 0)
-        process_days = {b for b in range(7) if mask & (1 << b)} or set(range(7))
-    else:
-        process_days = {day}
-
-    # Último proceso YA OCURRIDO (más gracia), no el de esta semana a
-    # ciegas: a las 04:23 UTC del miércoles, el de las 07:00 todavía no
-    # había pasado y tomarlo como "último" liberaba el pool antes de que
-    # Sleeper procesara. Ese era el bug de Juantasy.
-    last = None
-    for back in range(0, 15):
-        d = today - dt.timedelta(days=back)
-        if d.weekday() in process_days:
-            m = _run_at(d)
-            if m + grace <= now_dt:
-                last = m
-                break
-    if last is None:                       # no deberia pasar: nunca encontro
-        return {"locked": True, "unknown": False, "until_ms": 0, "day": day,
-                "reason": "no se pudo ubicar el último proceso"}   # proceso
-
-    free_from = last + grace
-    free_until = free_from + dt.timedelta(days=clear_days)
+    days = _process_days(s)
     nxt = None
     for fwd in range(0, 15):
         d = today + dt.timedelta(days=fwd)
-        if d.weekday() in process_days:
-            m = _run_at(d)
+        if d.weekday() in days:
+            m = d.replace(hour=hour % 24, minute=0, second=0, microsecond=0)
             if m > now_dt:
                 nxt = m
                 break
-    if nxt is None:
-        nxt = last + dt.timedelta(days=7)
-    # `waiver_clear_days == 0` NO se interpreta como "sin ventana libre": el
-    # resto de la app lo lee como "resuelve el mismo día" (ver la cadena
-    # `cadence` en _roster_row). No se inventa semántica acá: si una liga
-    # no abre free agency, se declara abajo con WAIVERS_NEVER_FREE.
-    #
-    # Override por liga: hay ligas que NUNCA abren free agency aunque los
-    # settings digan que tienen ventana. Dynasty Juantasy es una: su UI
-    # muestra "Custom Daily Waivers: Monday … Sunday (5 AM CST)", o sea
-    # corre TODOS los días, pero `daily_waivers_days` viene como máscara
-    # [lun, mie, vie, dom] y no coincide. Cuando la API y la UI se
-    # contradicen, gana la UI (es lo que el usuario ve) y queda anotado.
-    # Override por liga con `WAIVERS_NEVER_FREE=<id1,id2>` en .env.
-    never = os.environ.get("WAIVERS_NEVER_FREE", "") or ""
-    ids = {x.strip() for x in never.split(",") if x.strip()}
-    if league_id and str(league_id) in ids:
-        return {"locked": True, "unknown": False,
-                "until_ms": _ms(nxt if nxt is not None
-                                else last + dt.timedelta(days=1)),
-                "day": day,
-                "reason": "esta liga no abre free agency"}
 
-    if now_dt < free_until:
-        if free_until - now_dt <= dt.timedelta(hours=border_h):
-            # Cerca del corte se bloquea: el error caro es al revés
-            # (ofrecer el add en ventana), el barato es "reclamá".
-            return {"locked": True, "unknown": False, "until_ms": _ms(nxt),
-                    "day": day,
-                    "reason": "borde del corte de waivers: se reclama"}
-        return {"locked": False, "unknown": False, "until_ms": 0,
-                "day": None, "reason": ""}
-    return {"locked": True, "unknown": False, "until_ms": _ms(nxt),
-            "day": day,
-            "reason": "post-juego: se reclama, no se agrega"}
+    return {"locked": False, "unknown": False, "until_ms": 0, "day": None,
+            "next_run_ms": _ms(nxt) if nxt else 0,
+            "reason": ""}
 
 
 def waiver_mode(league_id, _league=None):

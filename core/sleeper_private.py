@@ -226,6 +226,39 @@ def list_transactions(league_id, roster_id=None, jwt=None, session=None,
     return out
 
 
+def newest_waiver_resolution(league_id, jwt=None, session=None, timeout=20):
+    """`status_updated` (ms) del ÚLTIMO lote de waivers que resolvió la liga.
+
+    Por qué esto y no un reloj: Sleeper encola los waivers a la hora exacta
+    de `daily_waivers_hour` pero tarda unos minutos en resolverlos, porque
+    procesa liga por liga. Medido en vivo el 2026-09-30: el lote se encoló
+    entre 04:40 y 07:32 UTC y TODAS sus transaccionesResolveron con el
+    MISMO `status_updated`, 11:04:56, contra las 11:00 en punto del
+    calendario. Ese instante es la marca del lote.
+
+    Mientras now < ese valor el pool sigue bloqueado; cuando pasa, se
+    destraba. No hay constante adivinada ni margen: se lee el evento.
+
+    Se piden sólo transactions tipo `waiver` con `status_filters: []`
+    (todos los estados) para que la respuesta sea chica; el filtro de
+    tipo va en el servidor, no después en Python.
+    """
+    jwt = jwt or os.environ.get("SLEEPER_JWT", "")
+    session = session or os.environ.get("SLEEPER_SESSION", "")
+    if not jwt:
+        raise ValueError("Falta SLEEPER_JWT en env/.env")
+    rows = _list_tx_fetch(league_id, "", '"waiver"', "",
+                          jwt, session, timeout)
+    newest = 0
+    for r in rows or []:
+        if (r or {}).get("type") != "waiver":
+            continue
+        ms = _to_ms((r or {}).get("status_updated"))
+        if ms > newest:
+            newest = ms
+    return newest
+
+
 # Cache corto de pendings: el Hub pedía verify(lid) + pending(lid) celérrimos
 # seguidos (mismo dato dos veces) más cada poll. 30s, se revienta en cada
 # writer (send/cancel/update/reorder). Cambios hechos en la UI de Sleeper

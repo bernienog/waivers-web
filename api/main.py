@@ -86,7 +86,7 @@ async def _unhandled(request: Request, exc: Exception):
 
 # Versión del backend (health + footer UI): la única forma de saber qué
 # build corre tras un reinstall (NSIS salta archivos bloqueados).
-APP_VERSION = "0.1.38"
+APP_VERSION = "0.1.39"
 def _uid():
     """User id dinámico (el wizard lo guarda sin reinicio)."""
     return os.environ.get("SLEEPER_USER_ID", "")
@@ -822,9 +822,15 @@ def _fantasy_positions(roster_positions):
 
 @app.get("/api/free-agents/{league_id}")
 def free_agents(league_id: str, q: str = "", limit: int = 20,
-                pos: str = "", sort: str = "proj", week: int = 0):
+                pos: str = "", sort: str = "proj", week: int = 0,
+                fresh: int = 0):
     """Agentes libres = mapa completo menos rostered. Default: proj semanal
-    desc (mirror UI), fallback a search_rank. Default 20, tope 100."""
+    desc (mirror UI), fallback a search_rank. Default 20, tope 100.
+
+    `fresh=1` ignora el cache de 30s de la senal de resolucion de waivers.
+    Lo manda la PRIMERA carga de Mis Ligueas: si no, el W/+ sale con el
+    estado del render anterior y el usuario ve lo que ya no es."""
+    fresh = bool(int(fresh or 0))
     limit = max(1, min(int(limit), 100))
     # Estas dos lecturas NO son opcionales: sin `rostered` no sabemos a
     # quién se le puede agregar (listar como libre a un jugador de otro
@@ -848,8 +854,13 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
     # waiver-relevancia amerita proyección. Los badges usan solo futuro.
     try:
         clears_all = waiver_clears_cached(league_id, keep_past=True)["data"]
+        clears_ok = True
     except Exception:
         clears_all = {}
+        # No se pudo leer: se distingue de "no hay ninguno" para que la
+        # ventana no afirme que el pool esta libre cuando en realidad no se
+        # sabe (fallo de Sleeper o JWT faltante).
+        clears_ok = False
     _now_ms = int(time.time() * 1000)
     clears = {pid: ms for pid, ms in clears_all.items() if ms > _now_ms}
     ql = (q or "").lower()
@@ -868,13 +879,21 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
         fail(E_SLEEPER_READ, "Sleeper me devolvió la liga vacía.", None, 502)
     rpos = [str(p).upper() for p in (lg_full.get("roster_positions") or [])]
     FANTASY_POS = _fantasy_positions(rpos)
-    # Ventana de la LIGA: durante el lock post-juego no hay add al instante
-    # para nadie, porque no sabemos quién Catch todavía (no existe status
-    # por jugador: LeaguePlayer tiene 4 campos y el schema no tiene una
-    # query de waivers). Es la misma regla que usa la UI de Sleeper para
-    # pintar "W Wed" en todo el pool, leída de los settings de la liga.
+# El W de la LIGA: el pool va bloqueado mientras haya waivers VIVOS, que es
+    # lo mismo que pinta la UI de Sleeper. Son dos senales, ninguna inventada:
+    #  - `live_clears`: jugadores con `waiver_clears_at` en el futuro (el
+    #    "Waiver Time" post drop). Ya lo teniamos del `clears` de arriba:
+    #    este cambio no agrega ni una llamada.
+    #  - `newest_waiver_ms`: el `status_updated` del lote mas reciente, para
+    #    cuando Sleeper encoló pero todavia no termina de resolver. fresh=1 en
+    #    la primera carga de Mis Ligueas para que el badge salga bien de una.
+    # Los settings de la liga ya NO deciden si el pool esta libre: solo
+    # cuando resuelve cada drop (mascara de paso 2 + hora del Pacifico).
     win = pub.waiver_window(lg_full.get("settings") or {},
-                                 league_id=league_id)
+                            league_id=league_id,
+                            newest_waiver_ms=pub.newest_waiver_cached(
+                                league_id, fresh=bool(fresh)),
+                            live_clears=(len(clears) if clears_ok else None))
     out = []
     for pid, v in pmap.items():
         if pid in taken:
@@ -1694,6 +1713,7 @@ def _send_one_claim(cx, cid: int):
         r["league_id"], r["player_id"], r["drop_player_id"], rid, settings)
     priv.bust_pending(r["league_id"])  # el pending cambió: reventar cache
     pub.bust_bundle_display(r["league_id"])  # roster/saldo: idem
+    pub.bust_waiver_cache(r["league_id"])  # senal de resolucion
     cx.execute("UPDATE claims SET status=?, payload_json=?, http_status=?,"
                " sent_at=?, transaction_id=?, error_text=? WHERE id=?",
                ("submitted" if ok else "failed",
@@ -1766,6 +1786,7 @@ def claims_submit(week: int = 0):
                     r["league_id"], r["player_id"], r["drop_player_id"], rid, settings)
                 priv.bust_pending(r["league_id"])
                 pub.bust_bundle_display(r["league_id"])
+                pub.bust_waiver_cache(r["league_id"])
                 cx.execute("UPDATE claims SET status=?, payload_json=?,"
                            " http_status=?, sent_at=?, transaction_id=?,"
                            " error_text=? WHERE id=?",
@@ -1830,6 +1851,7 @@ def pending_cancel(body: CancelBody):
     ok, raw = priv.cancel_claim(body.league_id, body.transaction_id, leg=body.leg)
     priv.bust_pending(body.league_id)
     pub.bust_bundle_display(body.league_id)
+    pub.bust_waiver_cache(body.league_id)  # senal de resolucion: el lote cambio
     if ok:
         cx = connect()
         cx.execute("UPDATE claims SET status='failed',"
@@ -1862,6 +1884,7 @@ def pending_update(body: UpdateBid):
         leg=body.leg)
     priv.bust_pending(body.league_id)
     pub.bust_bundle_display(body.league_id)
+    pub.bust_waiver_cache(body.league_id)  # senal de resolucion: el lote cambio
     if ok:
         # El bid editado es el real en Sleeper: sincronizarlo o el digest
         # muestra el bid de creación (caso Winston $0 vs bid real).
@@ -1904,6 +1927,7 @@ def pending_reorder(body: ReorderBody):
             break  # parar al primer fallo: el orden quedó parcial
     priv.bust_pending(body.league_id)
     pub.bust_bundle_display(body.league_id)
+    pub.bust_waiver_cache(body.league_id)  # senal de resolucion: el lote cambio
     return {"results": results}
 
 

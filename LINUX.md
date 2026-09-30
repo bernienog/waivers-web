@@ -69,14 +69,23 @@ un detalle de configuración: es un límite del navegador.
 
 ## Ajustes de `.env` (opcionales)
 
-Además de las variables de la sesión, hay tres que afinan la ventana de
-waivers de cada liga. **No hace falta tocar ninguna** en el uso normal.
+Además de las variables de la sesión, la ventana de waivers ya **no se
+configura a mano**. Antes existían `WAIVERS_NEVER_FREE`, `WAIVER_GRACE_MIN` y
+`WAIVER_BORDER_H`; en 0.1.39 se quitaron las tres.
 
-| variable | para qué |
-|---|---|
-| `WAIVERS_NEVER_FREE` | ids de ligas, separados por coma, que **nunca** abren free agency. Para las que el UI de Sleeper y el API se contradicen. |
-| `WAIVER_GRACE_MIN` | margen tras el proceso de waivers (default 30). Sleeper resuelve por lotes y en un día pesado se pasa. |
-| `WAIVER_BORDER_H` | horas antes del corte en las que se bloquea (default 6). Ante duda se bloquea: es el error barato. |
+El `W` de la liga sale de la misma regla que usa la UI de Sleeper: el pool
+va bloqueado **mientras haya waivers vivos**. Eso se lee de dos datos, sin
+constantes ni adivinar:
+
+- `waiver_clears_at` por jugador — el "Waiver Time" ("Players stay on the
+  waivers for 1 day"), que solo aplica después de un drop. Sleeper lo manda
+  en segundos y la app lo pasa a ms.
+- `status_updated` del último lote de waivers — para cuando Sleeper ya
+  encoló pero todavía no resuelve (encola a la hora exacta y tarda unos
+  minutos, porque procesa liga por liga).
+
+Si no hay ninguna de las dos señales, la app **no afirma** que el jugador
+esté libre: devuelve `unknown`.
 
 La hora de proceso **no se configura**: sale de `settings.daily_waivers_hour`
 del API, que viene en hora Pacífica, y se convierte con el offset real de
