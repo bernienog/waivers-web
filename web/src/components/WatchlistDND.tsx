@@ -47,7 +47,7 @@ function Row({ item, onDel, onClaim }: {
 export default function WatchlistDND({ leagues, onClaim, onMulti }: {
   leagues: League[];
   onClaim: (pid: string, name: string, league: League) => void;
-  onMulti: (pid: string, name: string) => void;
+  onMulti: (pid: string, name: string, leagues: League[]) => void;
 }) {
   const [items, setItems] = useState<WatchItem[]>([]);
   const [claimFor, setClaimFor] = useState<WatchItem | null>(null);
@@ -56,6 +56,46 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
   const [err, setErr] = useState('');
   const sensors = useSensors(useSensor(PointerSensor));
   useEsc(() => setClaimFor(null));
+
+  // Disponibilidad del jugador en TODAS las ligas, leída ANTES de elegir
+  // liga. Antes había que cliquear una liga para enterarte de que el
+  // jugador ya era tuyo ahí, y eso gastaba el click del modal entero.
+  // Misma idea que el panel de FantasyPros: una matriz para todas las
+  // ligas, no un call por liga.
+  const [matrix, setMatrix] = useState<Record<string, string[]> | null>(null);
+  const [pendingMap, setPendingMap] = useState<Record<string, string[]>>({});
+  const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    const pid = claimFor?.player_id;
+    if (!pid || !leagues.length) { setMatrix(null); return; }
+    let alive = true;
+    setChecking(true);
+    api.availabilityMatrix(leagues.map((l) => l.league_id), [pid])
+      .then((m) => {
+        if (!alive) return;
+        setMatrix(m.taken ?? {});
+        setPendingMap(m.pending ?? {});
+      })
+      .catch(() => { if (alive) setMatrix({}); })
+      .finally(() => { if (alive) setChecking(false); });
+    return () => { alive = false; };
+  }, [claimFor?.player_id, leagues]);
+
+  /** Ya es tuyo en esa liga (taken y no es un claim propio pendiente). */
+  function ownedIn(lid: string, pid: string): boolean {
+    const t = matrix?.[lid] ?? [];
+    const p = pendingMap?.[lid] ?? [];
+    return t.includes(pid) && !p.includes(pid);
+  }
+  function pendingIn(lid: string, pid: string): boolean {
+    return (pendingMap?.[lid] ?? []).includes(pid);
+  }
+  /** Ligas donde el claim todavía tiene sentido. */
+  function viable(lid: string, pid: string): boolean {
+    if (checking || matrix === null) return true;   // sin dato: no se cierra la puerta
+    return !ownedIn(lid, pid);
+  }
 
   async function reload() {
     try {
@@ -171,27 +211,54 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
               +{claimFor.name ?? claimFor.player_id} <PosChip pos={claimFor.pos} />
             </h3>
             <div><small className="muted">elige liga:</small></div>
-            {leagues.length > 1 && (
-              <div className="row">
-                <button className="multibtn grow" onClick={() => {
-                  onMulti(claimFor.player_id, claimFor.name ?? claimFor.player_id);
-                  setClaimFor(null);
-                }}>
-                  ⚡ multibid en {leagues.length} ligas
-                </button>
-              </div>
-            )}
-            {leagues.map((l) => (
-              <div key={l.league_id} className="row">
-                <span className="grow">{l.name} <small className="muted">{l.mode}</small></span>
-                <button className="primary" onClick={() => {
-                  onClaim(claimFor.player_id, claimFor.name ?? claimFor.player_id, l);
-                  setClaimFor(null);
-                }}>
-                  elegir
-                </button>
-              </div>
-            ))}
+            {checking && <div className="row"><small className="muted">viendo dónde ya está rosterizado…</small></div>}
+            {(() => {
+              const pid = claimFor.player_id;
+              const vivas = leagues.filter((l) => viable(l.league_id, pid));
+              return (
+                <>
+                  {vivas.length > 1 && (
+                    <div className="row">
+                      <button className="multibtn grow" onClick={() => {
+                        onMulti(pid, claimFor.name ?? pid, vivas);
+                        setClaimFor(null);
+                      }}>
+                        ⚡ multibid en {vivas.length} liga{vivas.length === 1 ? '' : 's'}
+                      </button>
+                    </div>
+                  )}
+                  {leagues.map((l) => {
+                    const ok = viable(l.league_id, pid);
+                    const pend = pendingIn(l.league_id, pid);
+                    return (
+                      <div key={l.league_id} className="row">
+                        <span className="grow">
+                          {l.name} <small className="muted">{l.mode}</small>
+                          {!ok && <small className="muted"> — ya es tuyo</small>}
+                          {ok && pend && <small className="muted"> — claim pendiente</small>}
+                        </span>
+                        <button className="primary" disabled={!ok}
+                          title={ok ? '' : 'ya está en tu roster de esa liga'}
+                          onClick={() => {
+                            if (!ok) return;
+                            onClaim(pid, claimFor.name ?? pid, l);
+                            setClaimFor(null);
+                          }}>
+                          {ok ? 'elegir' : 'ya tuyo'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                  {vivas.length === 0 && !checking && (
+                    <div className="row">
+                      <small className="muted">
+                        ya lo tenés en todas tus ligas: no hay claim que hacer.
+                      </small>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         </div>
       )}

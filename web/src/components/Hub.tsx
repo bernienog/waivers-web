@@ -122,7 +122,7 @@ export default function Hub({ leagues, tick, leagueTick, active, onOpenLeague, o
   }
   const [editing, setEditing] = useState<{ league: League; tx: PendingTx } | null>(null);
   const [adding, setAdding] = useState<League | null>(null);
-  const [claimDraft, setClaimDraft] = useState<{ league: League; pid: string; name: string; multi?: boolean } | null>(null);
+  const [claimDraft, setClaimDraft] = useState<{ league: League; pid: string; name: string; multi?: boolean; multiOnly?: League[] } | null>(null);
   const [toast, setToast] = useState('');
   /** Reconciliación morning-after: una vez por montaje, solo si hay
    * submitted locales (el freshness es local: cero llamadas si no hay
@@ -389,7 +389,7 @@ export default function Hub({ leagues, tick, leagueTick, active, onOpenLeague, o
           <div className="cap-scroll"><WatchlistDND
             leagues={leagues}
             onClaim={(pid, name, league) => setClaimDraft({ league, pid, name })}
-            onMulti={(pid, name) => setClaimDraft({ league: leagues[0], pid, name, multi: true })}
+            onMulti={(pid, name, only) => setClaimDraft({ league: only[0] ?? leagues[0], pid, name, multi: true, multiOnly: only })}
           /></div>
         </div>
 
@@ -588,7 +588,7 @@ export default function Hub({ leagues, tick, leagueTick, active, onOpenLeague, o
       {claimDraft && (
         <LeagueClaimModal
           league={claimDraft.league}
-          leagues={leagues}
+          leagues={claimDraft.multiOnly ?? leagues}
           preselectedAdd={claimDraft.pid}
           preselectedName={claimDraft.name}
           startMulti={claimDraft.multi}
