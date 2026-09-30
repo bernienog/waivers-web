@@ -67,6 +67,22 @@ carpeta. Chrome, Chromium, Brave y Edge lo soportan en Linux.
 otra forma, así que con Firefox esta app no se puede conectar todavía. No es
 un detalle de configuración: es un límite del navegador.
 
+## Ajustes de `.env` (opcionales)
+
+Además de las variables de la sesión, hay tres que afinan la ventana de
+waivers de cada liga. **No hace falta tocar ninguna** en el uso normal.
+
+| variable | para qué |
+|---|---|
+| `WAIVERS_NEVER_FREE` | ids de ligas, separados por coma, que **nunca** abren free agency. Para las que el UI de Sleeper y el API se contradicen. |
+| `WAIVER_GRACE_MIN` | margen tras el proceso de waivers (default 30). Sleeper resuelve por lotes y en un día pesado se pasa. |
+| `WAIVER_BORDER_H` | horas antes del corte en las que se bloquea (default 6). Ante duda se bloquea: es el error barato. |
+
+La hora de proceso **no se configura**: sale de `settings.daily_waivers_hour`
+del API, que viene en hora Pacífica, y se convierte con el offset real de
+`America/Los_Angeles` (que tiene DST, a diferencia de México). El detalle
+de por qué está en [`plans/WAIVERS-WINDOW.md`](plans/WAIVERS-WINDOW.md).
+
 ## Dónde quedan tus datos
 
 En modo navegador todo vive **dentro del clon**, no en una carpeta de
