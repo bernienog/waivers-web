@@ -425,22 +425,20 @@ def waiver_window(settings: dict, league_id=None, now_ms: int = None,
 
     # (1) Lote encolado y todavia sin resolver. Se lee el evento, no se
     # calcula con una constante: por eso no hay WAIVER_BORDER_H ni gracia
-    # adivinada. La gracia de 30 min queda solo como red si el lote nunca
-    # llego a existir.
+    # adivinada.
     if newest > now:
         return {"locked": True, "unknown": False, "until_ms": newest,
                 "day": None, "next_run_ms": 0,
                 "reason": "Sleeper todavia no termina de procesar waivers"}
 
-    # (2) Hay waivers vivos: el pool va con W, como en la UI de Sleeper.
+    # (2) HAY WAIVERS VIVOS: el pool va con W, como en la UI de Sleeper.
     if vivos > 0:
         return {"locked": True, "unknown": False, "until_ms": 0,
                 "day": None, "next_run_ms": 0,
                 "reason": ("%d jugador(es) en waivers" % vivos) if vivos > 1
                 else "1 jugador en waivers"}
 
-    # (3) Ni waivers vivos ni lote pendiente: libre, PERO solo si realmente se
-    # pudieron medir los clears. Si no se pudieron, no se afirma nada.
+    # (3) Si no hay senal de clears, no se afirma nada.
     if not clears_medidos or not hay_regla:
         return {"locked": False, "unknown": True, "until_ms": 0, "day": None,
                 "next_run_ms": 0,
@@ -472,6 +470,29 @@ def waiver_window(settings: dict, league_id=None, now_ms: int = None,
                 nxt = m
                 break
 
+    # (4) DIA DE PROCESO Y TODAVIA NO RESUELTO: la liga esta en su ventana
+    # aunque no haya ni un jugador con `clears_at` vivo. Este es el caso de
+    # Chopped: corre mar-sab a las 15:00 UTC, y a las 14:45 del miercoles el
+    # lote de HOY todavia no existe, asi que el pool va con W. Sin este
+    # gate la app le offeria "+" (0.1.39 lo llevo asi).
+    #
+    # La pregunta NO es "¿que dia es?", sino "¿corrio ya el proceso de HOY?",
+    # que es el bug de Juantasy. Se contesta con el dato observado: si el
+    # lote mas reciente es ANTERIOR al proceso de hoy, hoy sigue sin
+    # resolver. Sin gracia inventada: si el lote de hoy ya esta, la ventana
+    # esta abierta.
+    hoy_proceso = None
+    if now_dt.weekday() in days:
+        hoy_proceso = today.replace(hour=hour % 24, minute=0, second=0,
+                                    microsecond=0)
+    if hoy_proceso is not None and (newest < _ms(hoy_proceso)):
+        return {"locked": True, "unknown": False,
+                "until_ms": _ms(hoy_proceso), "day": dow,
+                "next_run_ms": _ms(hoy_proceso),
+                "reason": "la liga procesa hoy y todavia no termino"}
+
+    # (5) Ventana abierta: ni waivers vivos, ni lote pendiente, ni dia de
+    # proceso sin resolver.
     return {"locked": False, "unknown": False, "until_ms": 0, "day": None,
             "next_run_ms": _ms(nxt) if nxt else 0,
             "reason": ""}
