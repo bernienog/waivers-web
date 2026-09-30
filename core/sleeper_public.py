@@ -207,6 +207,149 @@ def clear_process_caches():
 _ROSTER_ID_MEMO: dict = {}
 
 
+WAIVER_TZ_DEFAULT = "America/New_York"
+
+
+WAIVER_TZ_DEFAULT = "UTC"
+
+
+def _waiver_tz():
+    """Marco en el que cuenta el día y la hora de waivers.
+
+    UTC, no el reloj del usuario ni una zona inventada. Calibrado con un
+    dato concreto: en México (CST, UTC-6, sin DST) los waivers corren a
+    la 1:00 AM del miércoles, que es 07:00 UTC. 23:24 del martes + 97 min
+    = 07:00 UTC del miércoles: el momento exacto. Con el reloj local la
+    app contaba el día corrido y decía "libre" a las 00:01 mientras la
+    liga seguía bloqueada.
+
+    Override por .env `WAIVERS_WAIVER_TZ` si una liga corre con otro marco.
+    """
+    import datetime as _dt
+    name = os.environ.get("WAIVERS_WAIVER_TZ", "").strip() or WAIVER_TZ_DEFAULT
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:
+        return _dt.timezone.utc
+
+
+def waiver_window(settings: dict, now_ms: int = None):
+    """Ventana de waivers de la LIGA: ¿el pool está bloqueado?
+
+    Qué SÍ sabemos de Sleeper, y qué no (verificado con introspección del
+    GraphQL y con un HAR de la UI de Sleeper):
+
+    - NO existe un status por jugador. `LeaguePlayer` tiene 4 campos
+      (`metadata`, `settings`, `player_id`, `league_id`) y de 244 queries
+      del schema ninguna habla de waivers.
+    - `LeaguePlayer.settings.waiver_clears_at` es un REGISTRO de cuándo
+      resolvió cada waiver (en el HAR, 104 valores, todos en el pasado),
+      no un calendario. Solo sirve para el jugador con un waiver vivo.
+    - `/stats/nfl/{season}/{week}` viene VACÍO (la propia UI de Sleeper
+      recibió 2 bytes), así que "jugó la semana pasada" no se puede leer.
+
+    Lo que sí queda es la regla de la liga, y está en sus settings:
+    `waiver_day_of_week` (día que procesa) y `waiver_clear_days` (cuántos
+    días dura el lock). Con eso: el pool queda bloqueado desde que se juega
+    hasta que la liga procesa, y libre durante los `waiver_clear_days`
+    días siguientes. Eso es lo que la UI de Sleeper calcula por su cuenta
+    para pintar el "W Wed" del pool entero.
+
+    Se aplica por LIGA y no por jugador: durante la ventana no hay + para
+    nadie, porque no sabemos quiénmitter. Cuando el jugador además trae
+    `clears_at` propio, manda ese (Achane: lo dropearon hoy y resuelve en
+    dos días, no el miércoles como el resto).
+
+    Devuelve {locked, unknown, until_ms, day, reason}. Ante duda
+    (`unknown`, settings sin día de waivers) NO se afirma que esté libre:
+    devuelve unknown y la ruta decide."""
+    import datetime as dt
+    import time as _t
+    s = settings or {}
+    now = now_ms if now_ms is not None else int(_t.time() * 1000)
+
+    def _int(k, d=0):
+        try:
+            return int(s.get(k, d) or d)
+        except (TypeError, ValueError):
+            return d
+
+    try:
+        border_h = int(os.environ.get("WAIVER_BORDER_H", "6") or 6)
+    except ValueError:
+        border_h = 6
+    try:
+        grace_min = int(os.environ.get("WAIVER_GRACE_MIN", "30") or 30)
+    except ValueError:
+        grace_min = 30
+
+    # Sin los settings NO hay regla. Se dice "no se" en vez de inventar:
+    # inventar fue lo queFxjo que devuelva "libre" y ofrecía el +.
+    if not s or s.get("waiver_day_of_week") is None:
+        return {"locked": False, "unknown": True, "until_ms": 0, "day": None,
+                "reason": "no se pudo leer el día de waivers de la liga"}
+
+    # Hora de proceso. En liga DIARIA el valor es de la liga y se usa tal
+    # cual (`daily_waivers_hour`). En semanal Sleeper no expone una hora
+    # fiable, asi que va un default calibrado (7 UTC = 1:00 AM en Mexico,
+    # que es cuando corren) con override por .env
+    # `WAIVERS_WEEKLY_HOUR`. El costo de que este valor se mueve es de
+    # una hora de borde, y lo absorbe la gracia.
+    try:
+        weekly_hour = int(os.environ.get("WAIVERS_WEEKLY_HOUR", "7") or 7)
+    except ValueError:
+        weekly_hour = 7
+    day = _int("waiver_day_of_week", 0)   # 0=lunes (esta liga trae 2 y la
+                                         # UI de Sleeper muestra "W Wed")
+
+    tz = _waiver_tz()
+    now_dt = dt.datetime.fromtimestamp(now / 1000, tz)
+    today = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    offset = now_dt.weekday()          # lunes=0 ... domingo=6
+    grace = dt.timedelta(minutes=max(0, grace_min))
+
+    def _ms(d):
+        return int(d.timestamp() * 1000)
+
+    def _run_at(d, h):
+        return d.replace(hour=h % 24, minute=0, second=0, microsecond=0)
+
+    if _int("daily_waivers"):
+        # Diario: aplica el día exacto del waiver de la liga.
+        hour = _int("daily_waivers_hour", 0)
+        if not (_int("daily_waivers_days", 0) & (1 << offset)):
+            return {"locked": False, "unknown": False, "until_ms": 0,
+                    "day": None, "reason": ""}
+        until = _run_at(today + dt.timedelta(days=1), hour)
+        return {"locked": True, "unknown": False, "until_ms": _ms(until),
+                "day": offset, "reason": "waiver diario de la liga"}
+
+    # Semanal: el ÚLTIMO proceso YA OCURRIDO, no el de esta semana a
+    # ciegas. A las 05:24 UTC del miércoles, el proceso de las 07:00 UTC
+    # todavía no había pasado: tomar ese como "último" dejaba el pool
+    # libre antes de que Sleeper procesara. Si el de hoy (más gracia) aun
+    # no ocurrió, el último fue el de hace 7 días.
+    clear_days = max(1, _int("waiver_clear_days", 2))
+    cand = _run_at(today + dt.timedelta(days=(day - offset) % 7), weekly_hour)
+    last = cand if cand + grace <= now_dt else cand - dt.timedelta(days=7)
+    free_from = last + grace
+    free_until = free_from + dt.timedelta(days=clear_days)
+    nxt = last + dt.timedelta(days=7)
+    if now_dt < free_until:
+        if free_until - now_dt <= dt.timedelta(hours=border_h):
+            # Cerca del corte se bloquea: el error caro es al revés
+            # (ofrecer el add en ventana), el barato es "reclamá".
+            return {"locked": True, "unknown": False, "until_ms": _ms(nxt),
+                    "day": day,
+                    "reason": "borde del corte de waivers: se reclama"}
+        return {"locked": False, "unknown": False, "until_ms": 0,
+                "day": None, "reason": ""}
+    return {"locked": True, "unknown": False, "until_ms": _ms(nxt),
+            "day": day,
+            "reason": "post-juego: se reclama, no se agrega"}
+
+
 def waiver_mode(league_id, _league=None):
     """Detecta FAAB vs claim normal desde settings publicos.
     waiver_type==2 -> FAAB (validado con tu Juantasy).
@@ -355,12 +498,25 @@ def get_players_map(cache_path=None):
     if (cache_path in _MAP_CACHE
             and _MAP_CACHE[cache_path][0] == _mtime(cache_path)):
         return _MAP_CACHE[cache_path][1]
+    # Cache corrupta (escritura a medias, proceso muerto en el `json.dump`)
+    # NO puede voltear la app: se trata como cache miss y se re-fetch.
+    # Antes el `json.load` saltaba sin try y un archivo a medias dejaba
+    # /free-agents y el buscador caidos para siempre, en todas las ligas.
     if os.path.exists(cache_path):
-        with open(cache_path, encoding="utf-8") as f:
-            cached = json.load(f)
+        cached = None
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                cached = json.load(f)
+        except (OSError, ValueError):
+            cached = None
         # Cache vieja sin rank+inj -> refetch una vez y listo.
-        sample = next(iter(cached.values()), {})
+        sample = next(iter((cached or {}).values()), {})
         if cached and "rank" in sample and "inj" in sample:
+            _MAP_CACHE[cache_path] = (_mtime(cache_path), cached)
+            return cached
+        # Refresh falló antes y nos queda una version previa utilizable: se
+        # sirve con el nombre/rank viejos en vez de tumbar la pantalla.
+        if cached:
             _MAP_CACHE[cache_path] = (_mtime(cache_path), cached)
             return cached
     r = sleeper_get(f"{BASE}/players/nfl", timeout=60)
@@ -379,8 +535,13 @@ def get_players_map(cache_path=None):
             "rank": p.get("search_rank"),
             "inj": p.get("injury_status"),
         }
-    with open(cache_path, "w", encoding="utf-8") as f:
+    # Escritura ATOMICA: dump a .tmp y os.replace. Escribir en el sitio
+    # deja el archivo truncado si el proceso muere a mitad, que es como
+    # se fabricaba el cache corrupto de arriba.
+    tmp = cache_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(slim, f)
+    os.replace(tmp, cache_path)
     _MAP_CACHE[cache_path] = (_mtime(cache_path), slim)
     return slim
 

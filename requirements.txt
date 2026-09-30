@@ -1,6 +1,9 @@
 # Deps fijadas 2026-09-24 (Python 3.14.0, pip show local).
 # streamlit/app.py eliminados en Fase 0: nada los usa.
 requests==2.32.5
+# Base de zonas horarias: zoneinfo no la encuentra en Windows sin este
+# paquete, y la ventana de waivers la necesita (core/sleeper_public).
+tzdata==2025.2
 python-dotenv==1.2.1
 fastapi==0.128.0
 uvicorn==0.40.0

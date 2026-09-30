@@ -53,11 +53,32 @@ app = FastAPI(title="waivers-project")
 async def _unhandled(request: Request, exc: Exception):
     """Red de seguridad. Sin esto, una excepción que se escapa de una ruta
     sale como `Internal Server Error` (o un traceback) y el usuario ve un
-    500 sin acción posible. Acá se registra completo y se responde con un
-    código corto y una frase en español: el detalle va al log, no al cuerpo."""
+    500 sin acción posible. Ací se registra completo y se responde con un
+    código corto y una frase en español: el detalle va al log, no al cuerpo.
+
+    El trace va TAMBIÉN a `errores.log` en el data dir. Antes solo salía por
+    stderr, y en la app de escritorio Tauri crea el sidecar sin consola:
+    ese stderr se pierde y un 500 como el de /free-agents quedaba sin
+    causa para el usuario y para nosotros. Local, como todo lo demás."""
     import traceback
+    tb = traceback.format_exc()
     print("[interno] excepcion sin manejar: " + repr(exc), file=sys.stderr)
-    traceback.print_exc()
+    print(tb, file=sys.stderr)
+    try:
+        from core.db import _data_dir
+        log = os.path.join(_data_dir(), "errores.log")
+        # Tope de 256 KB con trim: un archivo que crece sola es otro bug.
+        try:
+            if os.path.isfile(log) and os.path.getsize(log) > 256 * 1024:
+                with open(log, "w", encoding="utf-8") as f:
+                    f.write("(truncado)\n")
+        except OSError:
+            pass
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                    f"{getattr(request.url, 'path', '?')}\n{tb}\n")
+    except Exception:
+        pass  # loggear el traceback nunca debe tapar el 500 original
     return JSONResponse(status_code=500,
                         content={"detail": {
                             "error": "Algo falló de nuestro lado. Cierra y vuelve a abrir la app.",
@@ -65,7 +86,7 @@ async def _unhandled(request: Request, exc: Exception):
 
 # Versión del backend (health + footer UI): la única forma de saber qué
 # build corre tras un reinstall (NSIS salta archivos bloqueados).
-APP_VERSION = "0.1.35"
+APP_VERSION = "0.1.37"
 def _uid():
     """User id dinámico (el wizard lo guarda sin reinicio)."""
     return os.environ.get("SLEEPER_USER_ID", "")
@@ -805,8 +826,24 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
     """Agentes libres = mapa completo menos rostered. Default: proj semanal
     desc (mirror UI), fallback a search_rank. Default 20, tope 100."""
     limit = max(1, min(int(limit), 100))
-    taken = pub.get_rostered_ids(league_id)
-    pmap = pub.get_players_map()
+    # Estas dos lecturas NO son opcionales: sin `rostered` no sabemos a
+    # quién se le puede agregar (listar como libre a un jugador de otro
+    # roster sería peor que un error), y sin el mapa no hay pool. Antes
+    # una de ellas fallando salía por el handler global: 500 "algo falló
+    # de nuestro lado" en TODAS las ligas, indistinguible de un bug. Un
+    # rate limit de Sleeper por un par de recargas seguidas lo provocaba.
+    try:
+        taken = pub.get_rostered_ids(league_id)
+    except Exception as e:
+        fail(E_SLEEPER_READ,
+             "No pude leer los rosters de la liga. Espera unos segundos y "
+             "dale refrescar.", e)
+    try:
+        pmap = pub.get_players_map()
+    except Exception as e:
+        fail(E_SLEEPER_READ,
+             "No pude leer la lista de jugadores de Sleeper. Espera unos "
+             "segundos y dale refrescar.", e)
     # Clears completo (incl. vencidos) para el pool: cualquier rastro de
     # waiver-relevancia amerita proyección. Los badges usan solo futuro.
     try:
@@ -816,15 +853,27 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
     _now_ms = int(time.time() * 1000)
     clears = {pid: ms for pid, ms in clears_all.items() if ms > _now_ms}
     ql = (q or "").lower()
-    # Posiciones que la LIGA rosteriza (regla de la liga, no un set fijo):
-    # una liga sin DST no debe listar defensas, una sin K no debe listar
-    # kickers. Solo fantasy: fuera DB/LB/DL/etc (DTO lazy de Sleeper).
+    # La liga YA es necesaria acá (posiciones que rosteriza) y además trae
+    # la regla de waivers de la que depende el botón de cada fila. Antes
+    # el fallo se tragaba con lg_full = {} y se seguía: la ventana se
+    # calculaba con defaults y salía "libre", o sea + para todos, que es
+    # justo el bug (y fue lo que hizo que unas ligas fueran y otras no).
     try:
         lg_full = pub.get_league_full(league_id)
-    except Exception:
-        lg_full = {}
+    except Exception as e:
+        fail(E_SLEEPER_READ,
+             "No pude leer los ajustes de la liga. Espera unos segundos y "
+             "dale refrescar.", e)
+    if not isinstance(lg_full, dict) or not lg_full:
+        fail(E_SLEEPER_READ, "Sleeper me devolvió la liga vacía.", None, 502)
     rpos = [str(p).upper() for p in (lg_full.get("roster_positions") or [])]
     FANTASY_POS = _fantasy_positions(rpos)
+    # Ventana de la LIGA: durante el lock post-juego no hay add al instante
+    # para nadie, porque no sabemos quién Catch todavía (no existe status
+    # por jugador: LeaguePlayer tiene 4 campos y el schema no tiene una
+    # query de waivers). Es la misma regla que usa la UI de Sleeper para
+    # pintar "W Wed" en todo el pool, leída de los settings de la liga.
+    win = pub.waiver_window(lg_full.get("settings") or {})
     out = []
     for pid, v in pmap.items():
         if pid in taken:
@@ -837,7 +886,21 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
             continue
         if ql and ql not in (v.get("name") or "").lower():
             continue
-        out.append({"player_id": pid, "clears_at": clears.get(pid), **v})
+        # Dos locks, y el que manda es el más tardío:
+        #  - de LIGA (post-juego, hasta el día de waivers): afecta a todos
+        #  - del JUGADOR (`waiver_clears_at`): si lo dropearon hoy resuelve
+        #    en dos días, no el miércoles como el resto (caso Achane).
+        propio = clears.get(pid)
+        hasta = propio or win["until_ms"]
+        if propio and win["until_ms"]:
+            hasta = max(propio, win["until_ms"])
+        out.append({"player_id": pid, "clears_at": propio,
+                    "on_waivers": bool(win["locked"]) or bool(propio),
+                    "resolves_at": hasta or None,
+                    "resolves_day": win["day"] if (win["locked"]
+                                                   and not propio) else None,
+                    "waiver_unknown": bool(win["unknown"]),
+                    **v})
     if sort == "rank":
         out.sort(key=_rankkey)
         return out[:limit]

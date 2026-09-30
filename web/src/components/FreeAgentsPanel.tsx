@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, codigoDe, fmtClears, fmtDay3, textoDeError } from '../api';
+import { api, codigoDe, fmtDay3, textoDeError } from '../api';
 import { Avatar } from './PlayerBits';
 
 /** Fila de agente libre. La comparten la lista y el modal (para la
@@ -9,9 +9,19 @@ export interface FA {
   name: string;
   pos?: string;
   team?: string;
+  /** Lock POR JUGADOR: `waiver_clears_at`. Solo existe si alguien ya lo
+   *  agregó; el agente libre sin reclamar no tiene fila. Si viene, manda
+   *  sobre el día de la liga (Achane: lo dropearon hoy, resuelve en dos). */
   clears_at?: number | null;
-  /** Cuándo resuelve (solo si Sleeper nos da la fecha: en waivers). */
+  /** Lock de la LIGA (post-juego hasta el día de waivers) o el del
+   *  jugador. Si es cierto, NO hay add al instante: se reclama. */
+  on_waivers?: boolean;
+  /** Fecha exacta de resolución (ms). */
   resolves_at?: number | null;
+  /** Día de la liga (0=lunes..6=domingo) cuando el lock es de liga. */
+  resolves_day?: number | null;
+  /** No se pudo leer el día de waivers de la liga. */
+  waiver_unknown?: boolean;
   /** Ritmo de waivers de la liga (diario/semanal + días de clear). */
   cadence?: string;
   inj?: string | null;
@@ -24,6 +34,12 @@ export interface FA {
 }
 
 const TABS = ['ALL', 'QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
+
+/** Días tal como los numera `settings.waiver_day_of_week`: 0=lunes. Esta
+ *  liga trae 2 y la UI de Sleeper muestra "W Wed", o sea 2=miércoles. El
+ *  texto es lo único que depende de este mapeo (el bloqueo no: sale de la
+ *  regla de la liga), así que un error acá no mueve un botón. */
+const DIAS = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'];
 
 /** Los DST no tienen headshot en Sleeper (su player_id es el del equipo),
  * así que la celda lleva marcador de abreviación en vez de foto. */
@@ -188,11 +204,24 @@ export default function FreeAgentsPanel({ leagueId, tick, active, onAdd, onPicku
         </>
       ) : (
         list.map((p) => {
-          // En waivers en ESTA liga -> no se puede agregar: se reclama.
-          // El estado se marca con el filo de la fila, sin repetir texto.
-          const onWaivers = p.clears_at != null;
+          // Dos locks distintos y el que manda es el más tardío:
+          //  - por JUGADOR: waiver_clears_at (Achane, dropeado otro día)
+          //  - de LIGA: post-juego hasta el día de waivers, y NO aparece
+          //    en ninguna fila de league_players porque un agente libre
+          //    sin reclamar no tiene fila. Antes esto valía solo
+          //    `clears_at`, así que el pool entero salía con "+" para
+          //    agregar al instante estando toda la liga en waivers.
           const s = p.st;
           const has = p.proj != null && !!s;
+          // Dos locks. El de LIGA (post-juego hasta el día de waivers) es
+          // de todos a la vez y no se puede leer por jugador: no existe
+          // status (el tipo LeaguePlayer tiene 4 campos y el schema no
+          // tiene query de waivers). El del jugador trae su fecha propia.
+          const onWaivers = p.on_waivers === true;
+          const miFecha = p.clears_at != null && p.clears_at > Date.now();
+          const resuelve = p.resolves_day != null
+            ? `sale el ${DIAS[p.resolves_day] ?? ''}`
+            : fmtDay3(p.resolves_at ?? 0);
           return (
         <div key={p.player_id} className={`fa-grid fa-row${onWaivers ? ' onw' : ''}`}>
           {/* La celda del avatar SIEMPRE existe, aunque no haya foto: los
@@ -235,13 +264,17 @@ export default function FreeAgentsPanel({ leagueId, tick, active, onAdd, onPicku
             {watched.has(p.player_id) ? '★' : '☆'}
           </button>
           {/* UNA sola acción por fila, como en Sleeper. Nunca las dos:
-              - está en waivers -> W (no se puede agregar: se reclama)
-              - libre           -> + (se agrega ya, al instante) */}
+              - está en waivers (por jugador O por liga) -> W (se reclama)
+              - libre                                    -> + (al instante) */}
           {onWaivers ? (
             <span className="fa-cell">
               <button className="fa-act claim" onClick={() => onAdd(p.player_id, p.name)}
-                title={`Poner claim: sale de waivers ${fmtClears(p.clears_at!)}`}>W</button>
-              <span className="d">{fmtDay3(p.clears_at!)}</span>
+                title={`Poner claim: ${resuelve}` +
+                  (miFecha ? ' (lo dropearon hace poco, va aparte)'
+                           : ' (toda la liga está en waivers)')}>W</button>
+              <span className="d">{p.resolves_day != null
+                ? DIAS[p.resolves_day] ?? ''
+                : fmtDay3(p.resolves_at ?? 0)}</span>
             </span>
           ) : (
             <button className="fa-act add" title="Agregar ahora a tu roster"
