@@ -63,6 +63,7 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
   // Misma idea que el panel de FantasyPros: una matriz para todas las
   // ligas, no un call por liga.
   const [matrix, setMatrix] = useState<Record<string, string[]> | null>(null);
+  const [mineMap, setMineMap] = useState<Record<string, string[]>>({});
   const [pendingMap, setPendingMap] = useState<Record<string, string[]>>({});
   /** Ligas que el backend no pudo leer (falla de Sleeper). */
   const [failed, setFailed] = useState<string[]>([]);
@@ -85,6 +86,7 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
         if (!alive) return;
         const t = m.taken ?? {};
         setMatrix(t);
+        setMineMap(m.mine ?? {});
         setPendingMap(m.pending ?? {});
         const ids = leagues.map((l) => l.league_id);
         // Una liga ausente de `taken` es una liga que no se pudo leer: sin
@@ -101,12 +103,17 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
     return () => { alive = false; };
   }, [claimFor?.player_id, leagues]);
 
-  /** Ya es tuyo en esa liga (rostered y no es un claim propio pendiente). */
-  function ownedIn(lid: string, pid: string): boolean {
+  /** Está en TU roster, o es un claim tuyo abierto. */
+  function mineIn(lid: string, pid: string): boolean {
+    return (mineMap?.[lid] ?? []).includes(pid);
+  }
+  /** Lo tiene OTRO manager de la liga: no es agregable, pero NO es tuyo.
+   * Antes esto caía en el mismo `taken` y el front lo rotulaba "ya tuyo",
+   * que hacía creer al usuario que tenía al jugador en todas las ligas. */
+  function otroEn(lid: string, pid: string): boolean {
     const t = matrix?.[lid];
-    if (!t) return false;          // liga ausente = no medido, NO es "no lo tenes"
-    const p = pendingMap?.[lid] ?? [];
-    return t.includes(pid) && !p.includes(pid);
+    if (!t) return false;          // liga ausente = no medido
+    return t.includes(pid) && !mineIn(lid, pid);
   }
   function pendingIn(lid: string, pid: string): boolean {
     return (pendingMap?.[lid] ?? []).includes(pid);
@@ -116,17 +123,21 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
     return failed.includes(lid);
   }
 
-  type Verdict = 'libre' | 'ya-tuyo' | 'pendiente' | 'desconocido';
+  type Verdict = 'libre' | 'ya-tuyo' | 'de-otro' | 'pendiente' | 'desconocido';
   function verdictOf(lid: string, pid: string): Verdict {
     if (checking) return 'desconocido';
     if (unknownIn(lid)) return 'desconocido';
-    if (ownedIn(lid, pid)) return 'ya-tuyo';
+    if (mineIn(lid, pid)) return 'ya-tuyo';
+    if (otroEn(lid, pid)) return 'de-otro';
     if (pendingIn(lid, pid)) return 'pendiente';
     return 'libre';
   }
-  /** El claim solo tiene sentido si no es un deadlock conocido. */
+  /** El claim solo tiene sentido si está libre o es un claim tuyo
+   *  pendiente. "Ya tuyo" y "de otro" son los dos un no, pero por motivos
+   *  distintos y hay que decirlos distinto. */
   function viable(lid: string, pid: string): boolean {
-    return verdictOf(lid, pid) !== 'ya-tuyo';
+    const v = verdictOf(lid, pid);
+    return v === 'libre' || v === 'pendiente';
   }
 
   async function reload() {
@@ -249,6 +260,8 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
               // Mientras carga NO se cuentan ligas: si no, el multibid
               // aparece con todas y se va solo con las que sí.
               const vivas = checking ? [] : leagues.filter((l) => viable(l.league_id, pid));
+              const algoDeOtro = !checking && leagues.some(
+                (l) => verdictOf(l.league_id, pid) === 'de-otro');
               return (
                 <>
                   {!checking && vivas.length > 1 && (
@@ -263,35 +276,43 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
                   )}
                   {leagues.map((l) => {
                     const v = verdictOf(l.league_id, pid);
-                    const ok = v !== 'ya-tuyo';
+                    const ok = viable(l.league_id, pid);
                     const ETIQUETA: Record<Verdict, string> = {
                       libre: 'elegir',
                       'ya-tuyo': 'ya tuyo',
+                      'de-otro': 'lo tiene otro',
                       pendiente: 'pendiente',
                       desconocido: checking ? '…' : 'sin dato',
+                    };
+                    const NOTA: Record<Verdict, string> = {
+                      libre: '',
+                      'ya-tuyo': ' — ya es tuyo',
+                      'de-otro': ' — lo tiene otro de esa liga',
+                      pendiente: ' — claim pendiente tuyo',
+                      desconocido: ' — no pude leer esta liga',
                     };
                     return (
                       <div key={l.league_id} className="row">
                         <span className="grow">
                           {l.name} <small className="muted">{l.mode}</small>
-                          {v === 'ya-tuyo' && <small className="muted"> — ya es tuyo</small>}
-                          {v === 'pendiente' && <small className="muted"> — claim pendiente</small>}
-                          {v === 'desconocido' && !checking && (
-                            <small className="muted"> — no pude leer esta liga</small>
+                          {v !== 'libre' && !(v === 'desconocido' && checking) && (
+                            <small className="muted">{NOTA[v]}</small>
                           )}
                         </span>
                         {/* Mientras carga el botón NO dice "elegir": si no,
                             el primer render ofrece los 4 como clicables y
                             el estado real aparece segundos después. */}
                         <button className="primary"
-                          disabled={!ok || v === 'desconocido'}
+                          disabled={!ok}
                           title={v === 'ya-tuyo'
                             ? 'ya está en tu roster de esa liga'
-                            : v === 'desconocido'
-                              ? 'Sleeper no respondió para esta liga'
-                              : ''}
+                            : v === 'de-otro'
+                              ? 'otro manager de esa liga lo tiene: no se puede agregar'
+                              : v === 'desconocido'
+                                ? 'Sleeper no respondió para esta liga'
+                                : ''}
                           onClick={() => {
-                            if (!ok || v === 'desconocido') return;
+                            if (!ok) return;
                             onClaim(pid, claimFor.name ?? pid, l);
                             setClaimFor(null);
                           }}>
@@ -303,14 +324,9 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
                   {!checking && vivas.length === 0 && (
                     <div className="row">
                       <small className="muted">
-                        ya lo tenés en todas tus ligas: no hay claim que hacer.
-                      </small>
-                    </div>
-                  )}
-                  {!checking && vivas.length === 0 && failed.length > 0 && (
-                    <div className="row">
-                      <small className="muted">
-                        (puede faltar alguna: {failed.length} liga(s) no se pudieron leer)
+                        {algoDeOtro
+                          ? 'no hay claim que hacer: lo tenés vos o lo tiene otro en todas las ligas.'
+                          : 'no hay claim que hacer.'}
                       </small>
                     </div>
                   )}

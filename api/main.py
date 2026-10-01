@@ -86,7 +86,7 @@ async def _unhandled(request: Request, exc: Exception):
 
 # Versión del backend (health + footer UI): la única forma de saber qué
 # build corre tras un reinstall (NSIS salta archivos bloqueados).
-APP_VERSION = "0.1.42"
+APP_VERSION = "0.1.43"
 def _uid():
     """User id dinámico (el wizard lo guarda sin reinicio)."""
     return os.environ.get("SLEEPER_USER_ID", "")
@@ -675,12 +675,25 @@ class AvailMatrix(BaseModel):
 
 @app.post("/api/availability/matrix")
 def availability_matrix(body: AvailMatrix):
-    """Taken por liga para un set de players: rostered ∪ claims abiertos
-    propios (ready/submitted: tu waiver pendiente también bloquea el +).
-    Una lectura publica por liga. La liga que falle NO se omite en
+    """Disponibilidad por liga para un set de players.
+
+    DISTINGE DOS COSAS que antes iban juntas en `taken`:
+
+      - `mine`: el jugador está en TU roster (o en un claim tuyo abierto).
+        -> "ya es tuyo", no tenés nada que hacer.
+      - `taken` sin estar en `mine`: lo tiene OTRO manager de la liga.
+        -> no es agregable, pero NO es tuyo. Antes el front decía "ya es
+        tuyo" en los dos casos y era un mentiroso: el usuario leia
+        "tengo a este jugador en las 4 ligas" cuando en 2 era de otro.
+
+    Los claims propios abiertos (ready/submitted) también bloquean el +,
+    en `pending`.
+
+    Una lectura pública por liga. La liga que falle NO se omite en
     silencio: va en `failed`, para que el front diga "sin dato" en vez de
     asumir que el jugador está libre ahí."""
     want = set(str(p) for p in body.player_ids)
+    yo = str(os.environ.get("SLEEPER_USER_ID", "") or "")
     cx = connect()
     open_rows = cx.execute(
         "SELECT league_id, player_id FROM claims"
@@ -688,24 +701,41 @@ def availability_matrix(body: AvailMatrix):
     pending: dict = {}
     for r in open_rows:
         if str(r["player_id"]) in want:
-            pending.setdefault(r["league_id"], set()).add(str(r["player_id"]))
+            pending.setdefault(str(r["league_id"]), set()).add(
+                str(r["player_id"]))
     out: dict = {}
+    mis: dict = {}
     pend: dict = {}
     fail: list = []
     for lid in body.league_ids:
+        lid = str(lid)
         try:
-            owned = pub.get_rostered_ids(lid) & want
+            rosters = pub.get_rosters(lid)
         except Exception:
             # Se marca la liga como no leida en vez de omitirla en
             # silencio: si viene ausente de `taken`, el front no puede
-            # distinguir "no lo tenes" de "no supe" y afirma una de las dos.
+            # distinguir "no lo tenes" de "no supe".
             fail.append(lid)
             continue
-        mine = pending.get(lid, set())
-        out[lid] = sorted(owned | mine)
-        if mine:
-            pend[lid] = sorted(mine)
-    return {"taken": out, "pending": pend, "failed": fail}
+        aca: set = set()      # rostered en la liga (de quien sea)
+        mios: set = set()     # rostered en TU roster
+        for r in rosters:
+            pids = {str(x) for x in (r.get("players") or [])}
+            if not (pids & want):
+                continue
+            duenios = {str(r.get("owner_id") or "")}
+            duenios |= {str(c) for c in (r.get("co_owners") or [])}
+            aca |= pids & want
+            if yo and yo in duenios:
+                mios |= pids & want
+        mios |= pending.get(lid, set())
+        if mios:
+            mis[lid] = sorted(mios)
+        pend_here = pending.get(lid, set())
+        if pend_here:
+            pend[lid] = sorted(pend_here)
+        out[lid] = sorted(aca | pend_here)
+    return {"taken": out, "mine": mis, "pending": pend, "failed": fail}
 
 
 @app.get("/api/debug/transactions/{league_id}",
