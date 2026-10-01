@@ -470,29 +470,34 @@ def waiver_window(settings: dict, league_id=None, now_ms: int = None,
                 nxt = m
                 break
 
-    # (4) DIA DE PROCESO Y TODAVIA NO RESUELTO: la liga esta en su ventana
-    # aunque no haya ni un jugador con `clears_at` vivo. Este es el caso de
-    # Chopped: corre mar-sab a las 15:00 UTC, y a las 14:45 del miercoles el
-    # lote de HOY todavia no existe, asi que el pool va con W. Sin este
-    # gate la app le offeria "+" (0.1.39 lo llevo asi).
+    # (4) ACÁ NO SE INVENTA NADA.
     #
-    # La pregunta NO es "¿que dia es?", sino "¿corrio ya el proceso de HOY?",
-    # que es el bug de Juantasy. Se contesta con el dato observado: si el
-    # lote mas reciente es ANTERIOR al proceso de hoy, hoy sigue sin
-    # resolver. Sin gracia inventada: si el lote de hoy ya esta, la ventana
-    # esta abierta.
-    hoy_proceso = None
-    if now_dt.weekday() in days:
-        hoy_proceso = today.replace(hour=hour % 24, minute=0, second=0,
-                                    microsecond=0)
-    if hoy_proceso is not None and (newest < _ms(hoy_proceso)):
-        return {"locked": True, "unknown": False,
-                "until_ms": _ms(hoy_proceso), "day": dow,
-                "next_run_ms": _ms(hoy_proceso),
-                "reason": "la liga procesa hoy y todavia no termino"}
-
-    # (5) Ventana abierta: ni waivers vivos, ni lote pendiente, ni dia de
-    # proceso sin resolver.
+    # Lo que seoulder quitó y por que (no volver a ponerlo):
+    #
+    # - (0.1.39) "libre si no hay waivers vivos". Rompió Chopped: la liga
+    #   está en ventana aunque no haya NADIE con `clears_at` vivo, porque
+    #   abrió su proceso del día y todavía no resuelve.
+    # - (0.1.40) "si el lote más reciente es anterior al proceso de hoy, hoy
+    #   sigue pendiente". Peor: `status_updated` SOLO existe si alguien
+    #   dropeó algo. En una liga tranquila no hay transacciones, el lote
+    #   queda viejo y esa regla daba W para siempre (free/locked al revés).
+    #   El test que la validaba mentía: le pasaba el mismo lote a las 4 ligas.
+    # - (0.1.41) "si hoy es día de proceso y no llegó la hora, W". Se ve
+    #   correcta con las 4 ligas de este dev, pero es lo mismo de otra
+    #   forma: una regla de reloj afinada con 4 muestras para que las 4
+    #   salgan bien. NO es la regla de Sleeper, es un ajuste.
+    #
+    # Lo que SÍ es lectura de datos, y es lo único que manda:
+    #   - `waiver_clears_at` por jugador, en el futuro  -> hay waivers vivos
+    #   - `status_updated` del lote más reciente, futuro -> encoló, no résolvió
+    #
+    # Ambos se leen del API. Si no alcanzan para decidir, se devuelve
+    # `unknown` y la UI NO afirma ni W ni +: preferimos no mentir a
+    # inventar una ventana.
+    #
+    # Para derivar de verdad el "día de proceso" de la UI de Sleeper hace
+    # falta leer la pestaña de League Settings de una liga que NO sea de
+    # este dev. Está anotado en plans/WAIVERS-WINDOW.md.
     return {"locked": False, "unknown": False, "until_ms": 0, "day": None,
             "next_run_ms": _ms(nxt) if nxt else 0,
             "reason": ""}
