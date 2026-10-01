@@ -400,6 +400,14 @@ def waiver_window(settings: dict, league_id=None, now_ms: int = None,
 
     Devuelve {locked, unknown, until_ms, day, reason, next_run_ms}.
     Sin settings ni senal alguna devuelve `unknown` en vez de afirmar.
+
+    NOTA (0.1.41): falto una RED antes de que estas senales. El usuario
+    vio que hacia falta "la ventana de leniency": cuando una liga abre su
+    proceso del dia y todavia no resuelve, no hay `clears_at` vivo (nadie
+    dropeo) y el lote viejo no se distingue de "hoy todavia no corre". Las
+    dos senales de arriba dicen "libre" en ese caso y Sleeper muestra W.
+    Se documento como limite conocido en vez de volver a meter una regla
+    de reloj afinada con cuatro ligas, que es lo que rompio 0.1.39-0.1.41.
     """
     import datetime as dt
     import time as _t

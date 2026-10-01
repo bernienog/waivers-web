@@ -64,37 +64,69 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
   // ligas, no un call por liga.
   const [matrix, setMatrix] = useState<Record<string, string[]> | null>(null);
   const [pendingMap, setPendingMap] = useState<Record<string, string[]>>({});
-  const [checking, setChecking] = useState(false);
+  /** Ligas que el backend no pudo leer (falla de Sleeper). */
+  const [failed, setFailed] = useState<string[]>([]);
+  /** De qué jugador es la matriz que hay en pantalla. */
+  const [matrixFor, setMatrixFor] = useState<string>('');
+
+  // `checking` se DERIVA, no se setea en el effect. Antes era un flag que
+  // el effect ponía en true: en el primer render del modal ya era false,
+  // así que las 4 ligas se veían clicables y un segundo después se
+  // corregían. Eso es la carrera que se veía.
+  // Ahora es "la matriz que tengo no es de este jugador" -> desconocido.
+  const checking = !!claimFor && matrixFor !== claimFor.player_id;
 
   useEffect(() => {
     const pid = claimFor?.player_id;
-    if (!pid || !leagues.length) { setMatrix(null); return; }
+    if (!pid || !leagues.length) { setMatrix(null); setMatrixFor(''); return; }
     let alive = true;
-    setChecking(true);
     api.availabilityMatrix(leagues.map((l) => l.league_id), [pid])
       .then((m) => {
         if (!alive) return;
-        setMatrix(m.taken ?? {});
+        const t = m.taken ?? {};
+        setMatrix(t);
         setPendingMap(m.pending ?? {});
+        const ids = leagues.map((l) => l.league_id);
+        // Una liga ausente de `taken` es una liga que no se pudo leer: sin
+        // esto el front la tomaba por "no lo tenes".
+        setFailed(ids.filter((id) => !(id in t)));
+        setMatrixFor(pid);
       })
-      .catch(() => { if (alive) setMatrix({}); })
-      .finally(() => { if (alive) setChecking(false); });
+      .catch(() => {
+        if (!alive) return;
+        setMatrix({});
+        setFailed(leagues.map((l) => l.league_id));
+        setMatrixFor(pid);
+      });
     return () => { alive = false; };
   }, [claimFor?.player_id, leagues]);
 
-  /** Ya es tuyo en esa liga (taken y no es un claim propio pendiente). */
+  /** Ya es tuyo en esa liga (rostered y no es un claim propio pendiente). */
   function ownedIn(lid: string, pid: string): boolean {
-    const t = matrix?.[lid] ?? [];
+    const t = matrix?.[lid];
+    if (!t) return false;          // liga ausente = no medido, NO es "no lo tenes"
     const p = pendingMap?.[lid] ?? [];
     return t.includes(pid) && !p.includes(pid);
   }
   function pendingIn(lid: string, pid: string): boolean {
     return (pendingMap?.[lid] ?? []).includes(pid);
   }
-  /** Ligas donde el claim todavía tiene sentido. */
+  /** No se pudo leer esta liga: no se afirma nada, ni libre ni tomado. */
+  function unknownIn(lid: string): boolean {
+    return failed.includes(lid);
+  }
+
+  type Verdict = 'libre' | 'ya-tuyo' | 'pendiente' | 'desconocido';
+  function verdictOf(lid: string, pid: string): Verdict {
+    if (checking) return 'desconocido';
+    if (unknownIn(lid)) return 'desconocido';
+    if (ownedIn(lid, pid)) return 'ya-tuyo';
+    if (pendingIn(lid, pid)) return 'pendiente';
+    return 'libre';
+  }
+  /** El claim solo tiene sentido si no es un deadlock conocido. */
   function viable(lid: string, pid: string): boolean {
-    if (checking || matrix === null) return true;   // sin dato: no se cierra la puerta
-    return !ownedIn(lid, pid);
+    return verdictOf(lid, pid) !== 'ya-tuyo';
   }
 
   async function reload() {
@@ -214,10 +246,12 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
             {checking && <div className="row"><small className="muted">viendo dónde ya está rosterizado…</small></div>}
             {(() => {
               const pid = claimFor.player_id;
-              const vivas = leagues.filter((l) => viable(l.league_id, pid));
+              // Mientras carga NO se cuentan ligas: si no, el multibid
+              // aparece con todas y se va solo con las que sí.
+              const vivas = checking ? [] : leagues.filter((l) => viable(l.league_id, pid));
               return (
                 <>
-                  {vivas.length > 1 && (
+                  {!checking && vivas.length > 1 && (
                     <div className="row">
                       <button className="multibtn grow" onClick={() => {
                         onMulti(pid, claimFor.name ?? pid, vivas);
@@ -228,31 +262,55 @@ export default function WatchlistDND({ leagues, onClaim, onMulti }: {
                     </div>
                   )}
                   {leagues.map((l) => {
-                    const ok = viable(l.league_id, pid);
-                    const pend = pendingIn(l.league_id, pid);
+                    const v = verdictOf(l.league_id, pid);
+                    const ok = v !== 'ya-tuyo';
+                    const ETIQUETA: Record<Verdict, string> = {
+                      libre: 'elegir',
+                      'ya-tuyo': 'ya tuyo',
+                      pendiente: 'pendiente',
+                      desconocido: checking ? '…' : 'sin dato',
+                    };
                     return (
                       <div key={l.league_id} className="row">
                         <span className="grow">
                           {l.name} <small className="muted">{l.mode}</small>
-                          {!ok && <small className="muted"> — ya es tuyo</small>}
-                          {ok && pend && <small className="muted"> — claim pendiente</small>}
+                          {v === 'ya-tuyo' && <small className="muted"> — ya es tuyo</small>}
+                          {v === 'pendiente' && <small className="muted"> — claim pendiente</small>}
+                          {v === 'desconocido' && !checking && (
+                            <small className="muted"> — no pude leer esta liga</small>
+                          )}
                         </span>
-                        <button className="primary" disabled={!ok}
-                          title={ok ? '' : 'ya está en tu roster de esa liga'}
+                        {/* Mientras carga el botón NO dice "elegir": si no,
+                            el primer render ofrece los 4 como clicables y
+                            el estado real aparece segundos después. */}
+                        <button className="primary"
+                          disabled={!ok || v === 'desconocido'}
+                          title={v === 'ya-tuyo'
+                            ? 'ya está en tu roster de esa liga'
+                            : v === 'desconocido'
+                              ? 'Sleeper no respondió para esta liga'
+                              : ''}
                           onClick={() => {
-                            if (!ok) return;
+                            if (!ok || v === 'desconocido') return;
                             onClaim(pid, claimFor.name ?? pid, l);
                             setClaimFor(null);
                           }}>
-                          {ok ? 'elegir' : 'ya tuyo'}
+                          {ETIQUETA[v]}
                         </button>
                       </div>
                     );
                   })}
-                  {vivas.length === 0 && !checking && (
+                  {!checking && vivas.length === 0 && (
                     <div className="row">
                       <small className="muted">
                         ya lo tenés en todas tus ligas: no hay claim que hacer.
+                      </small>
+                    </div>
+                  )}
+                  {!checking && vivas.length === 0 && failed.length > 0 && (
+                    <div className="row">
+                      <small className="muted">
+                        (puede faltar alguna: {failed.length} liga(s) no se pudieron leer)
                       </small>
                     </div>
                   )}

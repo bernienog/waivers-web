@@ -86,7 +86,7 @@ async def _unhandled(request: Request, exc: Exception):
 
 # Versión del backend (health + footer UI): la única forma de saber qué
 # build corre tras un reinstall (NSIS salta archivos bloqueados).
-APP_VERSION = "0.1.41"
+APP_VERSION = "0.1.42"
 def _uid():
     """User id dinámico (el wizard lo guarda sin reinicio)."""
     return os.environ.get("SLEEPER_USER_ID", "")
@@ -677,8 +677,9 @@ class AvailMatrix(BaseModel):
 def availability_matrix(body: AvailMatrix):
     """Taken por liga para un set de players: rostered ∪ claims abiertos
     propios (ready/submitted: tu waiver pendiente también bloquea el +).
-    Una lectura publica por liga; la liga que falle se omite en taken
-    (el modal/backend gatea igual)."""
+    Una lectura publica por liga. La liga que falle NO se omite en
+    silencio: va en `failed`, para que el front diga "sin dato" en vez de
+    asumir que el jugador está libre ahí."""
     want = set(str(p) for p in body.player_ids)
     cx = connect()
     open_rows = cx.execute(
@@ -690,16 +691,21 @@ def availability_matrix(body: AvailMatrix):
             pending.setdefault(r["league_id"], set()).add(str(r["player_id"]))
     out: dict = {}
     pend: dict = {}
+    fail: list = []
     for lid in body.league_ids:
         try:
             owned = pub.get_rostered_ids(lid) & want
         except Exception:
+            # Se marca la liga como no leida en vez de omitirla en
+            # silencio: si viene ausente de `taken`, el front no puede
+            # distinguir "no lo tenes" de "no supe" y afirma una de las dos.
+            fail.append(lid)
             continue
         mine = pending.get(lid, set())
         out[lid] = sorted(owned | mine)
         if mine:
             pend[lid] = sorted(mine)
-    return {"taken": out, "pending": pend}
+    return {"taken": out, "pending": pend, "failed": fail}
 
 
 @app.get("/api/debug/transactions/{league_id}",

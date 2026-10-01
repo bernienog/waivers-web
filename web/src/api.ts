@@ -138,8 +138,10 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ league_id, player_id, drop_player_id }) }),
   availability: (league_id: string, player_id: string) =>
     req<{ taken: boolean }>('/availability/' + league_id + '/' + player_id),
+  /** `failed` son las ligas que Sleeper no devolvió: el front no puede
+   *  asumir nada de ellas (no es lo mismo "no lo tenés" que "no supe"). */
   availabilityMatrix: (league_ids: string[], player_ids: string[]) =>
-    req<{ taken: Record<string, string[]>; pending: Record<string, string[]> }>(
+    req<{ taken: Record<string, string[]>; pending: Record<string, string[]>; failed?: string[] }>(
       '/availability/matrix', { method: 'POST', body: JSON.stringify({ league_ids, player_ids }) }),
   /** Aviso local: claims mutaron ( Hub/App -> FpWirePanel ). */
   notifyClaimsChanged: (league_id: string, player_id?: string) => {
