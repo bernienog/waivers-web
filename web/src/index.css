@@ -314,6 +314,9 @@ button.danger { background: transparent; color: var(--red); border: 1px solid va
 .fa-act.claim:hover:not(:disabled) {
   background: var(--amber); border-color: var(--amber); color: #2a1c00;
 }
+/* Pendiente de resolución: un tercer estado, ni W ni +. No es clicable. */
+.fa-act.pending { color: var(--muted); border-style: dashed; cursor: default; }
+.fa-row.onp { box-shadow: inset 2px 0 0 var(--muted); background: rgba(255, 255, 255, .02); }
 .fa-act.star { font-size: 13px; }
 .fa-act.on { color: var(--amber); border-color: rgba(255, 176, 32, .45); }
 /* Celda del W: 2 filas (W / día) para no ensanchar la columna. */

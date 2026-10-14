@@ -14,7 +14,7 @@ en el navegador, que es lo que hace [`./start.sh`](start.sh).
 > No afiliado con Sleeper ni con FantasyPros. Es un cliente de escritorio
 > para una API pública.
 
-**Versión actual: 0.1.37.** Es el mismo código que el instalador de
+**Versión actual: 0.1.44.** Es el mismo código que el instalador de
 Windows; esta repo es la parte web + backend, sin el shell de escritorio.
 El backend lo dice en `/api/health` (`version`).
 

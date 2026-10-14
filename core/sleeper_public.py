@@ -128,46 +128,42 @@ def get_rosters(league_id):
     return r.json()
 
 
-# Cuando el pool de free agents se destraba. La senal de verdad es el
-# status_updated del ultimo lote de waivers (ver
-# sleeper_private.newest_waiver_resolution): no hay constante ni margen, se
-# lee el evento. Esta capa solo cachea para no pegarle a Sleeper dos veces
-# por render.
-_WAIVER_TTL = 30  # s. Corto a proposito: la ventana tiene que abrir al toque.
-_WAIVER_CACHE: dict = {}  # league_id -> (epoch_s, ms|0)
+# La hora publicada es el inicio de la cola, no su resolución. Sleeper tarda
+# un tiempo variable en vaciarla (observado: minutos; el usuario reportó
+# hasta 15). Este tope genérico solo marca la espera como "pendiente"; no es
+# un campo de Sleeper ni una regla por liga.
+WAIVER_SETTLE_MINUTES = 15
 
 
-def newest_waiver_cached(league_id, fresh=False, _now=None):
-    """Ultimo lote de waivers resuelto por la liga, en ms. 0 = nunca hubo.
-
-    `fresh=True` se usa en la PRIMERA carga de Mis Ligueas para que el W o el
-    + salga bien desde el primer render: con 30s de cache, un usuario que
-    acaba de abrir la app veria el estado anterior hasta que expire. Despues
-    del primer render 30s alcanza y evita un poke por liga cada vez que se
-    repinta una fila.
-
-    Nunca lanza: si falta el JWT o Sleeper falla se devuelve el valor viejo
-    (o 0) y `waiver_window` cae a la cadencia, que es el camino conocido.
-    """
-    now = _now if _now is not None else time.time()
-    hit = _WAIVER_CACHE.get(str(league_id))
-    if hit and not fresh and now - hit[0] < _WAIVER_TTL:
-        return hit[1]
+def normalize_transaction_evidence(transactions):
+    """Normaliza la evidencia de transacciones sin inventar ausencias."""
+    datos = transactions or {}
+    pendientes = set()
+    for pid in datos.get("pending_player_ids") or []:
+        texto = str(pid)
+        if texto and texto != "0":
+            pendientes.add(texto)
     try:
-        from . import sleeper_private as priv
-        ms = priv.newest_waiver_resolution(league_id)
-    except Exception:
-        ms = hit[1] if hit else 0
-    _WAIVER_CACHE[str(league_id)] = (now, ms)
-    return ms
+        resuelto = int(datos.get("resolved_ms") or 0)
+    except (TypeError, ValueError):
+        resuelto = 0
+    return {
+        "ok": datos.get("ok") is True,
+        "stale": datos.get("stale") is True,
+        "pending_player_ids": pendientes,
+        "pending_count": int(datos.get("pending_count") or 0),
+        "resolved_ms": max(0, resuelto),
+    }
 
 
+# La cola de la liga vive en sleeper_private.league_waiver_pool_cached. Este
+# módulo conserva el nombre histórico para los writers: lo único que hace es
+# reventar ese cache compartido.
 def bust_waiver_cache(league_id=None):
-    """Reventa la senal de resolucion (writers: send/cancel/update/reorder)."""
-    if league_id is None:
-        _WAIVER_CACHE.clear()
-    else:
-        _WAIVER_CACHE.pop(str(league_id), None)
+    """Reventa la evidencia de la cola (writers: send/cancel/update/reorder)."""
+    from . import sleeper_private as priv
+
+    priv.bust_pool_waiver_cache(league_id)
 
 
 def get_transactions(league_id, week):
@@ -298,217 +294,354 @@ def _pacific_offset(at=None):
         return -7 if 3 <= _dt.datetime.now().month <= 10 else -8
 
 
-def _process_hour(settings, at=None):
-    """Hora de proceso de la liga en UTC.
-
-    `settings.daily_waivers_hour` está en **hora PACÍFICA**, no en UTC ni
-    en la del usuario. Verificado contra tres controles independientes:
-
-      Juantasy  campo 0 -> 07:00 UTC = 1 AM CST  ("Clear Waivers:
-                Wednesday (1 AM CST)" en el UI de Sleeper)
-      Chopped   campo 8 -> 15:00 UTC = 9 AM CST  (el usuario: "9am")
-      Dynasty   campo 4 -> 11:00 UTC = 5 AM CST  ("Processing Time
-                5 AM CST" en el UI de Sleeper)
-
-    Por eso en 0.1.37, que usaba un 07:00 UTC fijo, daba bien en Juantasy y
-    NUCLEAR (ambas valen 0) por casualidad y mal en Chopped y Dynasty.
-    """
+def _schedule_int(value, default=None):
+    """Entero de settings sin comerse ceros válidos ni inventar ausencias."""
+    if value is None or value == "" or isinstance(value, bool):
+        return default
     try:
-        h = int((settings or {}).get("daily_waivers_hour", 0) or 0)
+        return int(value)
     except (TypeError, ValueError):
-        h = 0
-    return (h - _pacific_offset(at)) % 24
+        return default
 
 
-def _process_days(s):
-    """Dias de la semana en que la liga procesa waivers.
+def decode_daily_mask(mask):
+    """Máscara diaria de Sleeper: bit `2*d` para el día `d` (lunes=0).
 
-    `daily_waivers_days` es una MASCARA DE PASO 2, no de paso 1: cada dia de
-    la semana ocupa el bit `dia*2` y los bits impares no los usa ninguna liga.
-    Verificado en las 5 ligas de un HAR de la UI de Sleeper (2026-09-30):
-    Dynasty 5461 -> bits 0,2,4,6,8,10,12 -> los 7 dias; Chopped 1364 ->
-    2,4,6,8,10 -> mar-sab; Juantasy 1092 -> 2,6,10 -> mar/jue/sab. Ni un
-    solo bit impar en ninguna. Leerla con paso 1 daba conjuntos plausibles
-    pero falsos (Dynasty salia [lun,mie,vie,dom] en vez de los 7 dias), y
-    por eso el error no se veía a simple vista.
-
-    Sin diarias (`daily_waivers == 0`) procesa el dia de "Clear Waivers",
-    que es `waiver_day_of_week`.
+    Devuelve `(días, error)`. Solo acepta bits pares dentro de 0..12 porque
+    es lo observado; cualquier bit impar o fuera de rango es evidencia
+    corrupta, no otro día silencioso.
     """
-    raw = (s or {}).get("daily_waivers_days")
+    if mask is None or mask == "":
+        return set(), "sin mascara"
     try:
-        mask = int(raw) if raw is not None and raw != "" else 0
+        numero = int(mask)
     except (TypeError, ValueError):
-        mask = 0
-    days = {b // 2 for b in range(14) if mask & (1 << b)}
-    if not days:
-        # Sin mascara legible se usa el dia de Clear Waivers (0=lunes).
-        dow = (s or {}).get("waiver_day_of_week")
-        try:
-            days = {int(dow)} if dow is not None and dow != "" else {0}
-        except (TypeError, ValueError):
-            days = {0}
-    return {d % 7 for d in days}
+        return set(), "mascara ilegible"
+    if numero <= 0:
+        return set(), "mascara vacia"
+    dias = set()
+    for bit in range(32):
+        if numero & (1 << bit):
+            if bit % 2 or bit > 12:
+                return set(), f"bit inesperado: {bit}"
+            dias.add(bit // 2)
+    return dias, ""
 
 
-def waiver_window(settings: dict, league_id=None, now_ms: int = None,
-                  newest_waiver_ms: int = None, live_clears: int = 0):
-    """¿El pool de free agents de la liga esta bloqueado (W) o libre (+)?
+def build_waiver_schedule(settings, now_ms=None):
+    """Calendario puro de waivers: días designados y horas de publicación.
 
-    La regla de Sleeper es una sola y es la de su propia UI: el pool esta
-    bloqueado mientras haya waivers VIVOS, y libre cuando no hay ninguno.
-    "W Wed" no es un calendario, es "hay gente en waivers". Eso se lee de
-    dos cosas, y las dos estan en los datos:
-
-    1. `waiver_clears_at` por jugador (el "Waiver Time": "Players stay on
-       the waivers for 1 day"). Solo aplica DESPUES de un drop; para el
-       resto son historia. Viene en SEGUNDOS y `_to_ms` lo pasa a ms.
-       `live_clears` es cuantos hay con el valor en el futuro. Dynasty
-       tenia 5 al capturar el HAR del 2026-09-30, y por eso salia W.
-
-    2. `status_updated` del ultimo lote de waivers. Sleeper encola a la
-       hora exacta pero tarda unos minutos en resolver porque procesa
-       liga por liga: medido en vivo, lote encolado entre 04:40 y 07:32
-       UTC y TODAS sus transacciones con el MISMO `status_updated`,
-       11:04:56, contra las 11:00 en punto del calendario. Mientras now
-       sea menor, el lote sigue en la cola.
-
-    Los settings de la liga NO deciden si el pool esta libre; deciden
-    CUANDO resuelve cada drop, y son tres cosas distintas que se
-    confundian:
-
-    - "Custom Daily Waivers" -> `daily_waivers_days` (mascara de PASO 2:
-      bit `dia*2`) + `daily_waivers_hour` (hora PACIFICA, `_process_hour`).
-      Dynasty trae 5461 = los 7 dias, y su UI los lista uno por uno.
-    - "Clear Waivers" -> `waiver_day_of_week` = INICIO DE SEMANA. Vale 2
-      en las 5 ligas de un HAR porque es el default; solo se usa con
-      `daily_waivers` apagado.
-    - "Waiver Time" -> `waiver_clear_days` = por jugador, post drop.
-
-    Asi que si no hay waivers vivos y el lote ya resolvio, el pool esta
-    libre: NO se inventa una ventana por reloj. Antes se calculaba
-    `free_until = last + waiver_clear_days` y salia "+" en ligas que no
-    abren free agency nunca, que era el bug.
-
-    `next_run_ms` (proximo proceso segun la mascara) es informativo: sale
-    en la respuesta para que la UI pueda decir cuando abre la ventana.
-
-    `live_clears=None` significa "no se pudo medir" (falta el JWT o fallo
-    Sleeper) y es DISTINTO de `0`. Con `None` no se afirma que el pool este
-    libre: sale `unknown`. Ese matiz importa, porque si no, un JWT faltante
-    se traduce en un `+` para todo el pool, que es el error caro.
-
-    Devuelve {locked, unknown, until_ms, day, reason, next_run_ms}.
-    Sin settings ni senal alguna devuelve `unknown` en vez de afirmar.
-
-    NOTA (0.1.41): falto una RED antes de que estas senales. El usuario
-    vio que hacia falta "la ventana de leniency": cuando una liga abre su
-    proceso del dia y todavia no resuelve, no hay `clears_at` vivo (nadie
-    dropeo) y el lote viejo no se distingue de "hoy todavia no corre". Las
-    dos senales de arriba dicen "libre" en ese caso y Sleeper muestra W.
-    Se documento como limite conocido en vez de volver a meter una regla
-    de reloj afinada con cuatro ligas, que es lo que rompio 0.1.39-0.1.41.
+    Esta función NO decide si el pool está libre. Solo traduce las tres
+    etiquetas de la UI:
+    - `daily_waivers_days` + `daily_waivers_hour`: días y hora de proceso.
+    - `waiver_day_of_week`: semana/ciclo semanal, solo si no hay diarias.
+    - `waiver_clear_days`: intervalo post-drop por jugador; aquí solo se
+      conserva para texto, jamás como ventana del pool.
     """
     import datetime as dt
     import time as _t
+
     s = settings or {}
-    now = now_ms if now_ms is not None else int(_t.time() * 1000)
-
-    hay_regla = bool(s) and (s.get("daily_waivers_days") is not None
-                            or s.get("waiver_day_of_week") is not None)
-    newest = 0
+    ahora_ms = now_ms if now_ms is not None else int(_t.time() * 1000)
+    ahora = dt.datetime.fromtimestamp(ahora_ms / 1000, dt.timezone.utc)
+    es_diaria = _schedule_int(s.get("daily_waivers"), 0) == 1
+    hora_raw = s.get("daily_waivers_hour")
+    hora = _schedule_int(hora_raw)
+    semanal = _schedule_int(s.get("waiver_day_of_week"))
+    errores = []
+    if hora is None:
+        errores.append("sin hora de proceso")
+    if es_diaria:
+        dias, error = decode_daily_mask(s.get("daily_waivers_days"))
+        if error:
+            errores.append(error)
+    else:
+        if semanal is None or not 0 <= semanal <= 6:
+            errores.append("sin dia semanal")
+            dias = set()
+        else:
+            dias = {semanal % 7}
+    valido = not errores
     try:
-        newest = int(newest_waiver_ms or 0)
-    except (TypeError, ValueError):
-        newest = 0
-    # `None` = no se pudo medir. `0` = medido, no hay ninguno. La diferencia
-    # evita el fail-open: sin JWT, `clears` viene vacio y sin esto diria
-    # "+" para todo el pool.
-    clears_medidos = live_clears is not None
-    try:
-        vivos = int(live_clears) if clears_medidos else 0
-    except (TypeError, ValueError):
-        clears_medidos = False
-        vivos = 0
+        from zoneinfo import ZoneInfo
+        calendario = ZoneInfo("America/Los_Angeles")
+    except Exception:
+        calendario = dt.timezone.utc
+    # Las etiquetas de días de la UI van con la fecha del Pacífico porque la
+    # hora de publicación también es pared del Pacífico.
+    hoy_fecha = ahora.astimezone(calendario).date()
+    hoy = hoy_fecha.weekday()
+    dia_programado = hoy in dias if valido else False
+    libres = sorted(set(range(7)) - dias) if valido and es_diaria else []
 
-    # (1) Lote encolado y todavia sin resolver. Se lee el evento, no se
-    # calcula con una constante: por eso no hay WAIVER_BORDER_H ni gracia
-    # adivinada.
-    if newest > now:
-        return {"locked": True, "unknown": False, "until_ms": newest,
-                "day": None, "next_run_ms": 0,
-                "reason": "Sleeper todavia no termina de procesar waivers"}
+    def corrida(fecha):
+        # La hora siempre es pared del Pacífico en ESA fecha.
+        ingenua = dt.datetime(fecha.year, fecha.month, fecha.day, hora % 24)
+        try:
+            from zoneinfo import ZoneInfo
+            return ingenua.replace(tzinfo=ZoneInfo("America/Los_Angeles"))
+        except Exception:
+            ingenua = ingenua.replace(tzinfo=dt.timezone.utc)
+        return ingenua
 
-    # (2) HAY WAIVERS VIVOS: el pool va con W, como en la UI de Sleeper.
-    if vivos > 0:
-        return {"locked": True, "unknown": False, "until_ms": 0,
-                "day": None, "next_run_ms": 0,
-                "reason": ("%d jugador(es) en waivers" % vivos) if vivos > 1
-                else "1 jugador en waivers"}
+    anterior = actual = siguiente = None
+    if valido:
+        for atraso in range(0, 22):
+            fecha = hoy_fecha - dt.timedelta(days=atraso)
+            if fecha.weekday() in dias:
+                candidata = corrida(fecha)
+                if candidata <= ahora:
+                    anterior = candidata
+                    break
+        if hoy_fecha.weekday() in dias:
+            actual = corrida(hoy_fecha)
+        for adelanto in range(0, 22):
+            fecha = hoy_fecha + dt.timedelta(days=adelanto)
+            if fecha.weekday() in dias:
+                candidata = corrida(fecha)
+                if candidata > ahora:
+                    siguiente = candidata
+                    break
 
-    # (3) Si no hay senal de clears, no se afirma nada.
-    if not clears_medidos or not hay_regla:
-        return {"locked": False, "unknown": True, "until_ms": 0, "day": None,
-                "next_run_ms": 0,
-                "reason": "no se pudo leer la regla de waivers de la liga"
-                if not hay_regla else
-                "no se pudieron leer los waivers en curso"}
+    def _ms(momento):
+        return int(momento.timestamp() * 1000) if momento else 0
 
-    try:
-        dow = int(s.get("waiver_day_of_week") or 0)
-    except (TypeError, ValueError):
-        dow = 0
-    hour = _process_hour(s, at=dt.datetime.fromtimestamp(
-        now / 1000, dt.timezone.utc))
+    corrida_referencia = actual or siguiente or anterior
+    hora_utc = (corrida_referencia.astimezone(dt.timezone.utc).hour
+                if corrida_referencia is not None else None)
 
-    tz = _waiver_tz()
-    now_dt = dt.datetime.fromtimestamp(now / 1000, tz)
-    today = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    return {
+        "valid": valido,
+        "mode": "daily" if es_diaria else "weekly",
+        "process_days": sorted(dias),
+        "free_days": libres,
+        "schedule_day": dia_programado,
+        "weekday": hoy,
+        "hour_utc": hora_utc,
+        "previous_run_ms": _ms(anterior),
+        "current_run_ms": _ms(actual),
+        "next_run_ms": _ms(siguiente),
+        "weekly_day": semanal,
+        "clear_days": _schedule_int(s.get("waiver_clear_days")),
+        "errors": errores,
+    }
 
-    def _ms(d):
-        return int(d.timestamp() * 1000)
 
-    days = _process_days(s)
-    nxt = None
-    for fwd in range(0, 15):
-        d = today + dt.timedelta(days=fwd)
-        if d.weekday() in days:
-            m = d.replace(hour=hour % 24, minute=0, second=0, microsecond=0)
-            if m > now_dt:
-                nxt = m
-                break
+DIAS_WAIVER = ["lunes", "martes", "miércoles", "jueves", "viernes",
+                 "sábado", "domingo"]
 
-    # (4) ACÁ NO SE INVENTA NADA.
-    #
-    # Lo que seoulder quitó y por que (no volver a ponerlo):
-    #
-    # - (0.1.39) "libre si no hay waivers vivos". Rompió Chopped: la liga
-    #   está en ventana aunque no haya NADIE con `clears_at` vivo, porque
-    #   abrió su proceso del día y todavía no resuelve.
-    # - (0.1.40) "si el lote más reciente es anterior al proceso de hoy, hoy
-    #   sigue pendiente". Peor: `status_updated` SOLO existe si alguien
-    #   dropeó algo. En una liga tranquila no hay transacciones, el lote
-    #   queda viejo y esa regla daba W para siempre (free/locked al revés).
-    #   El test que la validaba mentía: le pasaba el mismo lote a las 4 ligas.
-    # - (0.1.41) "si hoy es día de proceso y no llegó la hora, W". Se ve
-    #   correcta con las 4 ligas de este dev, pero es lo mismo de otra
-    #   forma: una regla de reloj afinada con 4 muestras para que las 4
-    #   salgan bien. NO es la regla de Sleeper, es un ajuste.
-    #
-    # Lo que SÍ es lectura de datos, y es lo único que manda:
-    #   - `waiver_clears_at` por jugador, en el futuro  -> hay waivers vivos
-    #   - `status_updated` del lote más reciente, futuro -> encoló, no résolvió
-    #
-    # Ambos se leen del API. Si no alcanzan para decidir, se devuelve
-    # `unknown` y la UI NO afirma ni W ni +: preferimos no mentir a
-    # inventar una ventana.
-    #
-    # Para derivar de verdad el "día de proceso" de la UI de Sleeper hace
-    # falta leer la pestaña de League Settings de una liga que NO sea de
-    # este dev. Está anotado en plans/WAIVERS-WINDOW.md.
-    return {"locked": False, "unknown": False, "until_ms": 0, "day": None,
-            "next_run_ms": _ms(nxt) if nxt else 0,
-            "reason": ""}
+
+def waiver_schedule_label(schedule):
+    """Texto del ritmo con los días decodificados, sin inventar fechas."""
+    programa = schedule or {}
+    if not programa.get("valid"):
+        return "ritmo de waivers no disponible"
+    hora = programa.get("hour_utc")
+    hora_txt = f"a las {int(hora):02d}:00 UTC" if hora is not None else ""
+    dias = [DIAS_WAIVER[d] for d in programa.get("process_days") or []]
+    if programa.get("mode") == "daily":
+        if len(dias) == 7:
+            return f"corre proceso todos los días {hora_txt}".strip()
+        detalle = ", ".join(dias)
+        return f"corre proceso {detalle} {hora_txt}".strip()
+    if dias:
+        return f"corre proceso el {dias[0]} {hora_txt}".strip()
+    return "ritmo semanal no disponible"
+
+
+def classify_waiver_pool(schedule, transactions, clears_ok=True, now_ms=None):
+    """Decide el estado del pool con la etiqueta de día y la cola observada.
+
+    La etiqueta diaria de la UI manda sobre el día completo: un día marcado
+    como Waivers no se vuelve libre porque no haya filas pendientes. La hora
+    publicada solo marca la cola; la resolución observada marca su cierre.
+    Un `clears_at` futuro decide la fila correspondiente, jamás el pool.
+    """
+    import datetime as dt
+    import time as _t
+
+    programa = schedule or {}
+    evidencia = normalize_transaction_evidence(transactions)
+    ahora = now_ms if now_ms is not None else int(_t.time() * 1000)
+    clears_medidos = clears_ok is True
+    transacciones_ok = evidencia["ok"]
+    pendientes = evidencia["pending_player_ids"]
+    resuelto = evidencia["resolved_ms"]
+
+    def base(estado, accion, *, bloqueado=False, desconocido=False,
+             hasta=0, dia=None, motivo="", corrida=0, esperado=0,
+             observado=0):
+        return {
+            "pool_state": estado,
+            "pool_action": accion,
+            "locked": bloqueado,
+            "unknown": desconocido,
+            "until_ms": hasta,
+            "day": dia,
+            "reason": motivo,
+            "next_run_ms": programa.get("next_run_ms", 0),
+            "scheduled_run_ms": corrida,
+            "expected_resolution_ms": esperado,
+            "observed_resolution_ms": observado,
+            "pending_league_waivers": len(pendientes),
+            "debug": {
+                "mode": programa.get("mode"),
+                "process_days": list(programa.get("process_days") or []),
+                "free_days": list(programa.get("free_days") or []),
+                "transactions_ok": transacciones_ok,
+                "transactions_stale": evidencia["stale"],
+                "clears_measured": clears_medidos,
+                "weekly_day": programa.get("weekly_day"),
+            },
+        }
+
+    def desconocido(motivo):
+        return base("unknown", "none", desconocido=True, motivo=motivo)
+
+    if not programa.get("valid"):
+        return desconocido("no se pudo leer el calendario de waivers")
+
+    modo = programa.get("mode")
+    dias = set(programa.get("process_days") or [])
+    hoy = int(programa.get("weekday", -1))
+    dia_programado = bool(programa.get("schedule_day"))
+    corrida = int(programa.get("current_run_ms") or 0)
+    siguiente = int(programa.get("next_run_ms") or 0)
+    tope = corrida + WAIVER_SETTLE_MINUTES * 60_000 if corrida else 0
+    resuelta = (bool(corrida) and resuelto >= corrida
+                and resuelto <= ahora)
+
+    # Sin evidencia de transacciones, solo se puede afirmar el W que ya dice
+    # la propia etiqueta diaria. Nunca se puede afirmar un +.
+    if not transacciones_ok:
+        if modo == "daily" and dia_programado:
+            dia = dt.datetime.fromtimestamp(corrida / 1000,
+                                            dt.timezone.utc).weekday() if corrida else hoy
+            return base("locked", "claim", bloqueado=True,
+                        hasta=siguiente or corrida, dia=dia,
+                        motivo="dia de waivers; sin lectura de la cola",
+                        corrida=corrida, esperado=tope, observado=resuelto)
+        return desconocido("no se pudo leer la cola de waivers")
+
+    if modo == "daily":
+        if dia_programado:
+            if ahora < corrida:
+                dia = dt.datetime.fromtimestamp(
+                    corrida / 1000, dt.timezone.utc).weekday()
+                return base("locked", "claim", bloqueado=True, hasta=corrida,
+                            dia=dia,
+                            motivo="la publicacion de hoy todavia no llega",
+                            corrida=corrida, esperado=tope, observado=resuelto)
+            if not resuelta and ahora <= tope:
+                return base(
+                    "uncertain", "none", desconocido=True, hasta=tope,
+                    dia=hoy,
+                    motivo="publicado y sin resolucion observada",
+                    corrida=corrida, esperado=tope, observado=resuelto)
+            siguiente_dia = (dt.datetime.fromtimestamp(
+                siguiente / 1000, dt.timezone.utc).weekday()
+                if siguiente else hoy)
+            return base("locked", "claim", bloqueado=True, hasta=siguiente,
+                        dia=siguiente_dia,
+                        motivo="dia marcado como Waivers en la liga",
+                        corrida=corrida, esperado=tope, observado=resuelto)
+        if not clears_medidos:
+            return desconocido("no se pudieron leer los waivers en curso")
+        return base("free", "pickup",
+                    motivo="dia marcado como Free Agents en la liga",
+                    corrida=corrida, esperado=tope, observado=resuelto)
+
+    # Semanal: el ancla es el único día con publicación programada.
+    if dia_programado:
+        if not corrida:
+            return desconocido("semana sin corrida programada")
+        dia = dt.datetime.fromtimestamp(corrida / 1000,
+                                        dt.timezone.utc).weekday()
+        if ahora < corrida:
+            return base("locked", "claim", bloqueado=True, hasta=corrida,
+                        dia=dia, motivo="el cierre semanal todavia no llega",
+                        corrida=corrida, esperado=tope, observado=resuelto)
+        if not resuelta and ahora <= tope:
+            return base("uncertain", "none", desconocido=True, hasta=tope,
+                        dia=dia,
+                        motivo="publicado y sin resolucion observada",
+                        corrida=corrida, esperado=tope, observado=resuelto)
+        if resuelta or ahora > tope:
+            if not clears_medidos:
+                return desconocido("no se pudieron leer los waivers en curso")
+            return base("free", "pickup",
+                        motivo="cierre semanal observado o sin cola activa",
+                        corrida=corrida, esperado=tope, observado=resuelto)
+        return desconocido("semana sin evidencia suficiente")
+
+    if not clears_medidos:
+        return desconocido("no se pudieron leer los waivers en curso")
+    return base("free", "pickup", motivo="fuera del dia de cierre semanal",
+                corrida=corrida, esperado=tope, observado=resuelto)
+
+
+def resolve_player_row(pid, clears, pending_player_ids, pool, now_ms=None):
+    """Estado efectivo de UNA fila: el pool nunca hereda su `clears_at`."""
+    import time as _t
+
+    ahora = now_ms if now_ms is not None else int(_t.time() * 1000)
+    pid = str(pid)
+    propio = (clears or {}).get(pid)
+    futuro = isinstance(propio, (int, float)) and not isinstance(propio, bool) and propio > ahora
+    pendiente = pid in set(pending_player_ids or [])
+    pool = pool or {}
+    estado_pool = pool.get("pool_state")
+
+    if futuro or pendiente:
+        estado, accion, bloqueada, desconocida = "locked", "claim", True, False
+        # El bloqueo efectivo dura hasta que pasen TODAS las restricciones:
+        # la fecha propia y, si existe, la ventana del pool.
+        hasta = propio if futuro else None
+        pool_hasta = pool.get("until_ms") or None
+        if pool_hasta:
+            hasta = pool_hasta if hasta is None else max(hasta, pool_hasta)
+        detalle = ("transacción pendiente" if pendiente and not futuro
+                   else "jugador en waivers por drop reciente")
+    elif estado_pool == "uncertain":
+        estado, accion, bloqueada, desconocida = "uncertain", "none", False, True
+        hasta = pool.get("until_ms")
+        detalle = pool.get("reason", "")
+    elif estado_pool == "unknown":
+        estado, accion, bloqueada, desconocida = "unknown", "none", False, True
+        hasta = None
+        detalle = pool.get("reason", "")
+    elif estado_pool == "locked":
+        estado, accion, bloqueada, desconocida = "locked", "claim", True, False
+        hasta = pool.get("until_ms")
+        detalle = pool.get("reason", "")
+    elif estado_pool == "free":
+        estado, accion, bloqueada, desconocida = "free", "pickup", False, False
+        hasta = None
+        detalle = "agente libre"
+    else:
+        estado, accion, bloqueada, desconocida = "unknown", "none", False, True
+        hasta = None
+        detalle = pool.get("reason", "") or "estado del pool no reconocido"
+    return {"player_id": pid, "clears_at": propio if futuro else None,
+            "pending_transaction": pendiente, "on_waivers": bloqueada,
+            "waiver_state": estado, "waiver_action": accion,
+            "waiver_detail": detalle, "pool_state": estado_pool,
+            "resolves_at": hasta,
+            "resolves_day": (pool.get("day")
+                             if estado_pool == "locked" and not futuro else None),
+            "waiver_unknown": desconocida}
+
+
+def waiver_window(settings, now_ms=None, transactions=None, clears_ok=None):
+    """Ventana del pool con la etiqueta del día y la cola observada.
+
+    - La UI marca los días: Waivers o Free Agents.
+    - `waiver_clears_at` decide filas individuales y nunca se agrega al pool.
+    - La cola privada decide transacciones pendientes/resueltas.
+    - La hora publicada abre la espera; la resolución observada la cierra.
+    """
+    programa = build_waiver_schedule(settings, now_ms=now_ms)
+    return classify_waiver_pool(programa, transactions, clears_ok, now_ms)
 
 
 def waiver_mode(league_id, _league=None):

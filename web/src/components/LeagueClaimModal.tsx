@@ -91,17 +91,50 @@ export default function LeagueClaimModal({ league, leagues, preselectedAdd, pres
   const addClears = add ? clearsMap?.[add] : undefined;
   const isLocked = addClears != null && addClears > Date.now();
 
-  /** Ritmo de waivers de la liga, leído de sus settings (diario vs
-   * semanal + días de clear). Sin fecha inventada: solo el texto. */
+  /** Ritmo de waivers con los días ya decodificados. `waiver_clear_days`
+   * es retención post-drop por jugador y no se usa como apertura del pool. */
   const cadence = (() => {
     const r = league.resolve;
     if (!r) return '';
-    if (r.daily_waivers) {
-      return r.waiver_clear_days
-        ? 'esta liga corre waivers todos los días: tu claim resuelve al día siguiente.'
-        : 'esta liga corre waivers todos los días: tu claim resuelve el mismo día.';
+    const diasLargos = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+    const dias = (r.process_days ?? [])
+      .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+      .map((d) => diasLargos[d]);
+    const hora = r.process_hour_utc == null
+      ? ''
+      : ` a las ${String(r.process_hour_utc).padStart(2, '0')}:00 UTC`;
+    let ritmo = '';
+    if (r.schedule_mode === 'daily') {
+      if (dias.length === 7) {
+        ritmo = `esta liga corre proceso todos los días${hora}.`;
+      } else if (dias.length > 0) {
+        ritmo = `esta liga corre proceso ${dias.join(', ')}${hora}.`;
+      } else {
+        ritmo = 'esta liga no trae días de proceso legibles.';
+      }
+    } else if (r.schedule_mode === 'weekly') {
+      const dow = r.waiver_day_of_week;
+      const dia = dow != null && diasLargos[dow] ? diasLargos[dow] : null;
+      ritmo = dia
+        ? `esta liga corre proceso el ${dia}${hora}.`
+        : 'esta liga corre proceso una vez por semana.';
+    } else if (r.daily_waivers) {
+      ritmo = dias.length === 7
+        ? `esta liga corre proceso todos los días${hora}.`
+        : dias.length > 0
+          ? `esta liga corre proceso ${dias.join(', ')}${hora}.`
+          : 'esta liga no trae días de proceso legibles.';
+    } else {
+      ritmo = 'esta liga corre proceso una vez por semana.';
     }
-    return 'esta liga corre waivers una vez por semana: el claim espera al cierre.';
+    const espera = Number(r.waiver_clear_days);
+    if (Number.isFinite(espera) && espera > 0) {
+      return `${ritmo} Un drop reciente puede quedar en waivers ${espera} día${espera === 1 ? '' : 's'}.`;
+    }
+    if (espera === 0) {
+      return `${ritmo} Un drop reciente puede quedar disponible de inmediato.`;
+    }
+    return ritmo;
   })();
 
   useEffect(() => {

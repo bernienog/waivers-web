@@ -73,23 +73,28 @@ Además de las variables de la sesión, la ventana de waivers ya **no se
 configura a mano**. Antes existían `WAIVERS_NEVER_FREE`, `WAIVER_GRACE_MIN` y
 `WAIVER_BORDER_H`; en 0.1.39 se quitaron las tres.
 
-El `W` de la liga sale de la misma regla que usa la UI de Sleeper: el pool
-va bloqueado **mientras haya waivers vivos**. Eso se lee de dos datos, sin
-constantes ni adivinar:
+El `W` del pool sale de la etiqueta diaria de la UI de Sleeper. Un día
+marcado como Waivers pide claim; un día marcado como Free Agents permite `+`
+salvo que el jugador tenga su propio `clears_at` futuro o una transacción
+pendiente que lo mencione. Un futuro ajeno no cierra el resto del pool.
 
+Eso se lee de datos separados, sin constantes de liga:
+
+- `daily_waivers_days` + `daily_waivers_hour`: días designados y hora de
+  publicación. La máscara usa bit `2*d`; los días fuera son Free Agents en
+  las capturas reales.
+- Transacciones pendientes/resueltas de toda la liga: la cola observada.
 - `waiver_clears_at` por jugador — el "Waiver Time" ("Players stay on the
   waivers for 1 day"), que solo aplica después de un drop. Sleeper lo manda
   en segundos y la app lo pasa a ms.
-- `status_updated` del último lote de waivers — para cuando Sleeper ya
-  encoló pero todavía no resuelve (encola a la hora exacta y tarda unos
-  minutos, porque procesa liga por liga).
 
-Si no hay ninguna de las dos señales, la app **no afirma** que el jugador
-esté libre: devuelve `unknown`.
+Cuando la publicación ya empezó y no hay resolución observada, la fila muestra
+`…` pendiente y no ofrece ni `W` ni `+`. Si falta calendario o evidencia, la
+app devuelve `unknown`.
 
 La hora de proceso **no se configura**: sale de `settings.daily_waivers_hour`
-del API, que viene en hora Pacífica, y se convierte con el offset real de
-`America/Los_Angeles` (que tiene DST, a diferencia de México). El detalle
+del API, que viene en hora Pacífica, y se convierte en la fecha programada
+con `America/Los_Angeles` (que tiene DST, a diferencia de México). El detalle
 de por qué está en [`plans/WAIVERS-WINDOW.md`](plans/WAIVERS-WINDOW.md).
 
 ## Dónde quedan tus datos

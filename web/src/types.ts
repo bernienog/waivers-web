@@ -2,6 +2,11 @@ export interface ResolveRules {
   waiver_day_of_week?: number;
   waiver_clear_days?: number;
   daily_waivers?: number;
+  daily_waivers_days?: number;
+  daily_waivers_hour?: number;
+  process_days?: number[];
+  process_hour_utc?: number | null;
+  schedule_mode?: 'daily' | 'weekly' | string;
   leg?: number;
 }
 

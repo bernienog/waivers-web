@@ -13,9 +13,18 @@ export interface FA {
    *  agregó; el agente libre sin reclamar no tiene fila. Si viene, manda
    *  sobre el día de la liga (Achane: lo dropearon hoy, resuelve en dos). */
   clears_at?: number | null;
-  /** Lock de la LIGA (post-juego hasta el día de waivers) o el del
-   *  jugador. Si es cierto, NO hay add al instante: se reclama. */
+  /** Estado efectivo de la fila: bloqueada, libre, pendiente o desconocida. */
+  waiver_state?: 'locked' | 'free' | 'uncertain' | 'unknown';
+  /** Compatibilidad con respuestas viejas: equivale a `waiver_state`. */
   on_waivers?: boolean;
+  /** Qué puede hacer la fila: reclamar, agregar ahora o nada todavía. */
+  waiver_action?: 'claim' | 'pickup' | 'none';
+  /** Explicación corta y segura del estado pendiente/desconocido. */
+  waiver_detail?: string | null;
+  /** Una transacción pendiente menciona a este jugador. */
+  pending_transaction?: boolean;
+  /** Estado del pool: el de la etiqueta diaria de la liga. */
+  pool_state?: 'locked' | 'free' | 'uncertain' | 'unknown';
   /** Fecha exacta de resolución (ms). */
   resolves_at?: number | null;
   /** Día de la liga (0=lunes..6=domingo) cuando el lock es de liga. */
@@ -225,13 +234,26 @@ export default function FreeAgentsPanel({ leagueId, tick, active, onAdd, onPicku
           // de todos a la vez y no se puede leer por jugador: no existe
           // status (el tipo LeaguePlayer tiene 4 campos y el schema no
           // tiene query de waivers). El del jugador trae su fecha propia.
-          const onWaivers = p.on_waivers === true;
+          // Tres resultados posibles, como en la UI: W reclama, + agrega al
+          // instante y … espera evidencia. El estado pendiente/desconocido
+          // no ofrece ninguna transacción.
+          const estado = p.waiver_state ?? (p.on_waivers === true ? 'locked' : 'free');
+          const enEspera = estado === 'uncertain' || estado === 'unknown';
+          const onWaivers = estado === 'locked';
+          const detalle = p.waiver_detail
+            ?? (estado === 'uncertain'
+              ? 'publicado y sin resolución observada'
+              : estado === 'unknown'
+                ? 'sin evidencia suficiente'
+                : '');
           const miFecha = p.clears_at != null && p.clears_at > Date.now();
-          const resuelve = p.resolves_day != null
-            ? `sale el ${DIAS[p.resolves_day] ?? ''}`
-            : fmtDay3(p.resolves_at ?? 0);
+          const resuelve = estado === 'uncertain' || estado === 'unknown'
+            ? detalle
+            : p.resolves_day != null
+              ? `sale el ${DIAS[p.resolves_day] ?? ''}`
+              : fmtDay3(p.resolves_at ?? 0);
           return (
-        <div key={p.player_id} className={`fa-grid fa-row${onWaivers ? ' onw' : ''}`}>
+        <div key={p.player_id} className={`fa-grid fa-row${onWaivers ? ' onw' : ''}${enEspera ? ' onp' : ''}`}>
           {/* La celda del avatar SIEMPRE existe, aunque no haya foto: los
               DST no tienen headshot y Avatar devuelve null; sin esta
              .span, esa columna desaparece y TODO se corre una casilla
@@ -272,17 +294,27 @@ export default function FreeAgentsPanel({ leagueId, tick, active, onAdd, onPicku
             {watched.has(p.player_id) ? '★' : '☆'}
           </button>
           {/* UNA sola acción por fila, como en Sleeper. Nunca las dos:
-              - está en waivers (por jugador O por liga) -> W (se reclama)
-              - libre                                    -> + (al instante) */}
+              - W reclama cuando hay bloqueo afirmativo
+              - + agrega al instante cuando hay evidencia de pool libre
+              - … espera cuando la publicación ya salió pero no hay resolución */}
           {onWaivers ? (
             <span className="fa-cell">
               <button className="fa-act claim" onClick={() => onAdd(p.player_id, p.name)}
                 title={`Poner claim: ${resuelve}` +
                   (miFecha ? ' (lo dropearon hace poco, va aparte)'
-                           : ' (toda la liga está en waivers)')}>W</button>
+                           : p.pending_transaction
+                             ? ' (tiene una transacción pendiente)'
+                             : ' (toda la liga está en waivers)')}>W</button>
               <span className="d">{p.resolves_day != null
                 ? DIAS[p.resolves_day] ?? ''
                 : fmtDay3(p.resolves_at ?? 0)}</span>
+            </span>
+          ) : enEspera ? (
+            <span className="fa-cell">
+              <button className="fa-act pending" disabled title={detalle || 'pendiente de resolución'}>
+                …
+              </button>
+              <span className="d">{estado === 'uncertain' ? 'pendiente' : 'sin dato'}</span>
             </span>
           ) : (
             <button className="fa-act add" title="Agregar ahora a tu roster"

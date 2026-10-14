@@ -226,37 +226,131 @@ def list_transactions(league_id, roster_id=None, jwt=None, session=None,
     return out
 
 
-def newest_waiver_resolution(league_id, jwt=None, session=None, timeout=20):
-    """`status_updated` (ms) del ÚLTIMO lote de waivers que resolvió la liga.
+LEAGUE_WAIVER_POOL_QUERY_TMPL = (
+    "query league_waiver_pool {{\n"
+    '  pending: league_transactions_filtered(league_id: "{league_id}",'
+    "roster_id_filters: [],"
+    'type_filters: ["waiver"],leg_filters: [],status_filters: ["pending"]){{'
+    "\n    adds drops status status_updated transaction_id type\n"
+    "  }}\n"
+    '  resolved: league_transactions_filtered(league_id: "{league_id}",'
+    "roster_id_filters: [],"
+    'type_filters: ["waiver"],leg_filters: [],'
+    'status_filters: ["complete", "failed"]){{'
+    "\n    adds drops status status_updated transaction_id type\n"
+    "  }}\n"
+    "}}"
+)
 
-    Por qué esto y no un reloj: Sleeper encola los waivers a la hora exacta
-    de `daily_waivers_hour` pero tarda unos minutos en resolverlos, porque
-    procesa liga por liga. Medido en vivo el 2026-09-30: el lote se encoló
-    entre 04:40 y 07:32 UTC y TODAS sus transaccionesResolveron con el
-    MISMO `status_updated`, 11:04:56, contra las 11:00 en punto del
-    calendario. Ese instante es la marca del lote.
 
-    Mientras now < ese valor el pool sigue bloqueado; cuando pasa, se
-    destraba. No hay constante adivinada ni margen: se lee el evento.
+def _waiver_pool_rows(rows):
+    """Reduce filas de transacciones a jugadores pendientes y resoluciones."""
+    pendientes = set()
+    transacciones_pendientes = set()
+    resuelto = 0
+    for row in rows or []:
+        row = row or {}
+        if row.get("type") != "waiver":
+            continue
+        estado = row.get("status")
+        if estado == "pending":
+            for campo in ("adds", "drops"):
+                valores = row.get(campo) or {}
+                if isinstance(valores, dict):
+                    for pid in valores:
+                        if str(pid) and str(pid) != "0":
+                            pendientes.add(str(pid))
+                elif isinstance(valores, (list, tuple)):
+                    for pid in valores:
+                        if str(pid) and str(pid) != "0":
+                            pendientes.add(str(pid))
+            tid = row.get("transaction_id")
+            if tid:
+                transacciones_pendientes.add(str(tid))
+        elif estado in ("complete", "failed"):
+            resuelto = max(resuelto, _to_ms(row.get("status_updated")))
+    return pendientes, transacciones_pendientes, resuelto
 
-    Se piden sólo transactions tipo `waiver` con `status_filters: []`
-    (todos los estados) para que la respuesta sea chica; el filtro de
-    tipo va en el servidor, no después en Python.
+
+def league_waiver_pool(league_id, jwt=None, session=None, timeout=20):
+    """Estado de la cola de waivers de TODA la liga en una sola llamada.
+
+    Devuelve jugadores involucrados en waivers pendientes y la marca de
+    resolución más reciente, sin mezclar los dos conceptos. La llamada usa
+    dos selecciones con alias en el mismo POST para no multiplicar pokes.
+    Si el servidor no acepta esa forma compuesta, cae a las dos consultas
+    angostas ya conocidas antes de rendirse.
     """
     jwt = jwt or os.environ.get("SLEEPER_JWT", "")
     session = session or os.environ.get("SLEEPER_SESSION", "")
     if not jwt:
         raise ValueError("Falta SLEEPER_JWT en env/.env")
-    rows = _list_tx_fetch(league_id, "", '"waiver"', "",
-                          jwt, session, timeout)
-    newest = 0
-    for r in rows or []:
-        if (r or {}).get("type") != "waiver":
-            continue
-        ms = _to_ms((r or {}).get("status_updated"))
-        if ms > newest:
-            newest = ms
-    return newest
+    payload = {
+        "operationName": "league_waiver_pool",
+        "variables": {},
+        "query": LEAGUE_WAIVER_POOL_QUERY_TMPL.format(league_id=league_id),
+    }
+    headers = _headers(jwt)
+    headers["x-sleeper-graphql-op"] = "league_waiver_pool"
+    try:
+        r = sleeper_post(GRAPHQL_URL, json=payload,
+                         headers=headers, cookies=_cookies(session),
+                         timeout=timeout)
+        r.raise_for_status()
+        datos = (r.json().get("data") or {})
+        if "pending" not in datos or "resolved" not in datos:
+            raise ValueError("respuesta compuesta incompleta")
+        filas = (datos.get("pending") or []) + (datos.get("resolved") or [])
+    except Exception:
+        pendientes = _list_tx_fetch(league_id, "", '"waiver"', '"pending"',
+                                    jwt, session, timeout)
+        resueltos = _list_tx_fetch(league_id, "", '"waiver"',
+                                   '"complete", "failed"',
+                                   jwt, session, timeout)
+        filas = (pendientes or []) + (resueltos or [])
+    pendientes, transacciones, resuelto = _waiver_pool_rows(filas)
+    return {
+        "pending_player_ids": sorted(pendientes),
+        "pending_count": len(transacciones),
+        "resolved_ms": resuelto,
+        "ok": True,
+        "stale": False,
+    }
+
+
+_POOL_WAIVER_CACHE: dict = {}  # league_id -> (epoch_s, estado)
+_POOL_WAIVER_TTL = 30  # s; corto para no congelar la ventana
+
+
+def league_waiver_pool_cached(league_id, jwt=None, session=None,
+                              timeout=20, fresh=False):
+    """Cachea el estado de la cola de la liga. Nunca sirve un fallo como dato."""
+    import time as _time
+
+    clave = str(league_id)
+    ahora = _time.time()
+    hit = _POOL_WAIVER_CACHE.get(clave)
+    if hit and not fresh and ahora - hit[0] < _POOL_WAIVER_TTL:
+        return hit[1]
+    try:
+        estado = league_waiver_pool(league_id, jwt, session, timeout)
+    except Exception:
+        if hit:
+            viejo = dict(hit[1])
+            viejo["stale"] = True
+            return viejo
+        return {"pending_player_ids": [], "pending_count": 0,
+                "resolved_ms": 0, "ok": False, "stale": False}
+    _POOL_WAIVER_CACHE[clave] = (ahora, estado)
+    return estado
+
+
+def bust_pool_waiver_cache(league_id=None):
+    """Revienta el estado de la cola tras escrituras que la pueden cambiar."""
+    if league_id is None:
+        _POOL_WAIVER_CACHE.clear()
+    else:
+        _POOL_WAIVER_CACHE.pop(str(league_id), None)
 
 
 # Cache corto de pendings: el Hub pedía verify(lid) + pending(lid) celérrimos

@@ -86,7 +86,7 @@ async def _unhandled(request: Request, exc: Exception):
 
 # Versión del backend (health + footer UI): la única forma de saber qué
 # build corre tras un reinstall (NSIS salta archivos bloqueados).
-APP_VERSION = "0.1.43"
+APP_VERSION = "0.1.44"
 def _uid():
     """User id dinámico (el wizard lo guarda sin reinicio)."""
     return os.environ.get("SLEEPER_USER_ID", "")
@@ -464,9 +464,15 @@ def _league_row(x, _bundle=None):
         rs = (roster.get("settings") or {})
         record = f"{rs.get('wins', 0)}-{rs.get('losses', 0)}"
         lg = (lgfull.get("settings", {}) or {})
+        programa = pub.build_waiver_schedule(lg)
         resolve = {"waiver_day_of_week": lg.get("waiver_day_of_week"),
                    "waiver_clear_days": lg.get("waiver_clear_days"),
                    "daily_waivers": lg.get("daily_waivers"),
+                   "daily_waivers_days": lg.get("daily_waivers_days"),
+                   "daily_waivers_hour": lg.get("daily_waivers_hour"),
+                   "process_days": programa.get("process_days", []),
+                   "process_hour_utc": programa.get("hour_utc"),
+                   "schedule_mode": programa.get("mode"),
                    "leg": lg.get("leg", 1)}
     except Exception:
         wm, left, roster, record, resolve, lg, lgfull = (
@@ -533,6 +539,7 @@ def _purge_account_caches():
         # queda scoped por uid (ver _league_snapshot_read).
         print(f"[auth] no pude purgar el cache: {e!r}", file=sys.stderr)
     _CLEARS_CACHE.clear()
+    priv.bust_pool_waiver_cache()
     try:
         pub.clear_process_caches()
     except Exception as e:
@@ -915,48 +922,34 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
         fail(E_SLEEPER_READ, "Sleeper me devolvió la liga vacía.", None, 502)
     rpos = [str(p).upper() for p in (lg_full.get("roster_positions") or [])]
     FANTASY_POS = _fantasy_positions(rpos)
-# El W de la LIGA: el pool va bloqueado mientras haya waivers VIVOS, que es
-    # lo mismo que pinta la UI de Sleeper. Son dos senales, ninguna inventada:
-    #  - `live_clears`: jugadores con `waiver_clears_at` en el futuro (el
-    #    "Waiver Time" post drop). Ya lo teniamos del `clears` de arriba:
-    #    este cambio no agrega ni una llamada.
-    #  - `newest_waiver_ms`: el `status_updated` del lote mas reciente, para
-    #    cuando Sleeper encoló pero todavia no termina de resolver. fresh=1 en
-    #    la primera carga de Mis Ligueas para que el badge salga bien de una.
-    # Los settings de la liga ya NO deciden si el pool esta libre: solo
-    # cuando resuelve cada drop (mascara de paso 2 + hora del Pacifico).
+# La ventana usa dos evidencias separadas:
+    #  - etiqueta diaria: Waivers o Free Agents, desde los settings;
+    #  - cola privada: transacciones pendientes/resueltas de toda la liga.
+    # `clears` sigue siendo SOLO por jugador: un `clears_at` futuro no cierra
+    # el pool. `fresh=1` refresca la cola en la primera carga de Mis Ligas.
+    transacciones = priv.league_waiver_pool_cached(
+        league_id, fresh=bool(fresh))
     win = pub.waiver_window(lg_full.get("settings") or {},
-                            league_id=league_id,
-                            newest_waiver_ms=pub.newest_waiver_cached(
-                                league_id, fresh=bool(fresh)),
-                            live_clears=(len(clears) if clears_ok else None))
-    out = []
-    for pid, v in pmap.items():
-        if pid in taken:
-            continue
-        if not v.get("team"):  # sin equipo = irrelevante para FA
-            continue
+                            now_ms=_now_ms, transactions=transacciones,
+                            clears_ok=clears_ok)
+    pendientes = set(transacciones.get("pending_player_ids") or [])
+    def fila(pid, v):
+        estado = pub.resolve_player_row(pid, clears, pendientes, win, _now_ms)
+        estado.update(v)
+        estado["player_id"] = str(pid)
+        return estado
+
+    def pasa_filtros(pid, v):
+        if not v.get("team"):
+            return False
         if (v.get("pos") or "").upper() not in FANTASY_POS:
-            continue
+            return False
         if pos and (v.get("pos") or "") != pos.upper():
-            continue
-        if ql and ql not in (v.get("name") or "").lower():
-            continue
-        # Dos locks, y el que manda es el más tardío:
-        #  - de LIGA (post-juego, hasta el día de waivers): afecta a todos
-        #  - del JUGADOR (`waiver_clears_at`): si lo dropearon hoy resuelve
-        #    en dos días, no el miércoles como el resto (caso Achane).
-        propio = clears.get(pid)
-        hasta = propio or win["until_ms"]
-        if propio and win["until_ms"]:
-            hasta = max(propio, win["until_ms"])
-        out.append({"player_id": pid, "clears_at": propio,
-                    "on_waivers": bool(win["locked"]) or bool(propio),
-                    "resolves_at": hasta or None,
-                    "resolves_day": win["day"] if (win["locked"]
-                                                   and not propio) else None,
-                    "waiver_unknown": bool(win["unknown"]),
-                    **v})
+            return False
+        return not ql or ql in (v.get("name") or "").lower()
+
+    out = [fila(pid, v) for pid, v in pmap.items()
+           if pid not in taken and pasa_filtros(pid, v)]
     if sort == "rank":
         out.sort(key=_rankkey)
         return out[:limit]
@@ -972,31 +965,18 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
             if pid in have or pid in taken:
                 continue
             v = pmap.get(pid)
-            if not v or not v.get("team"):
-                continue
-            if (v.get("pos") or "").upper() not in FANTASY_POS:
-                continue
-            if pos and (v.get("pos") or "") != pos.upper():
-                continue
-            if ql and ql not in (v.get("name") or "").lower():
-                continue
-            out.append({"player_id": pid, "clears_at": clears.get(pid), **v})
+            if v and pasa_filtros(pid, v):
+                out.append(fila(pid, v))
     season = _season()
     # Puntos = stats × scoring de LA LIGA (público). Sin esto, sortea por
     # `pts_ppr` que es scoring estándar y no coincide con la UI.
-    try:
-        lg_settings = pub.get_league_full(league_id).get("settings") or {}
-    except Exception as e:
-        fail(E_SLEEPER_READ, "No pude leer los ajustes de la liga.", e)
+    # Los settings ya se leyeron arriba: no se repite la llamada.
+    lg_settings = lg_full.get("settings") or {}
     scoring_settings = pub.get_scoring_settings(league_id)
-    # Ritmo de waivers: hay ligas diarias y semanales, con distinto
-    #_clear_days_. Se expone como texto (sin inventar fecha).
-    w_daily = int(lg_settings.get("daily_waivers") or 0)
-    w_clear = int(lg_settings.get("waiver_clear_days") or 0)
-    cadence = ("waivers todos los días; resuelve al día siguiente" if w_clear else
-               "waivers todos los días; resuelve el mismo día") if w_daily else (
-        "esta liga corre waivers una vez por semana; resuelven "
-        f"{w_clear} días después")
+    # Ritmo de waivers con los días ya decodificados. `waiver_clear_days`
+    # es retención por jugador y no se usa para decir cuándo abre el pool.
+    programa = pub.build_waiver_schedule(lg_settings, now_ms=_now_ms)
+    cadence = pub.waiver_schedule_label(programa)
     try:
         pmap_proj = pub.get_projections_week(season, wk)
     except Exception as e:
@@ -1008,9 +988,9 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
         d["opp"] = p.get("opp")
         d["proj"] = _proj_points(p.get("stats"), scoring_settings)
         # Cuándo resuelve: si está en waivers, su clears_at ES la fecha
-        # que dio Sleeper (autoritativa). Si no, no hay fecha por jugador
-        # en los datos de Sleeper: no se inventa.
-        d["resolves_at"] = d.get("clears_at")
+        # que dio Sleeper (autoritativa). Si no, se conserva la fecha del
+        # pool ya calculada; no se inventa otra.
+        d["resolves_at"] = d.get("clears_at") or d.get("resolves_at")
         d["cadence"] = cadence
         st = p.get("stats") or {}
         # Columnas de la tabla de Sleeper (ATT, RUSH YD/TD, REC REC/YD/TD,
