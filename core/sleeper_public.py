@@ -597,8 +597,17 @@ def classify_waiver_pool(schedule, transactions, clears_ok=True, now_ms=None):
                 corrida=corrida, esperado=tope, observado=resuelto)
 
 
-def resolve_player_row(pid, clears, pending_player_ids, pool, now_ms=None):
-    """Estado efectivo de UNA fila: el pool nunca hereda su `clears_at`."""
+def resolve_player_row(pid, clears, pending_player_ids, pool, now_ms=None,
+                       team=None, bye_teams=None, monday_bye_free=False):
+    """Estado efectivo de UNA fila: el pool nunca hereda su `clears_at`.
+
+    `monday_bye_free` + `bye_teams`: exención del lunes en ligas semanales.
+    El pool de una semanal default está en W todo el lunes (limbo entre
+    semanas), pero Sleeper deja agregar a jugadores de equipos en bye: no
+    juegan, no hay lock de partido. Solo lunes, solo
+    semanal, solo con snapshot vigente: cualquier duda deja el W puesto.
+    Un `clears_at` futuro o una transacción pendiente siguen mandando sobre
+    la exención (recién dropeado va con W aunque su equipo descanse)."""
     import time as _t
 
     ahora = now_ms if now_ms is not None else int(_t.time() * 1000)
@@ -619,6 +628,12 @@ def resolve_player_row(pid, clears, pending_player_ids, pool, now_ms=None):
             hasta = pool_hasta if hasta is None else max(hasta, pool_hasta)
         detalle = ("transacción pendiente" if pendiente and not futuro
                    else "jugador en waivers por drop reciente")
+    elif (monday_bye_free and estado_pool == "locked"
+            and (pool.get("debug") or {}).get("mode") == "weekly"
+            and (team or "").upper() in set(bye_teams or ())):
+        estado, accion, bloqueada, desconocida = "free", "pickup", False, False
+        hasta = None
+        detalle = "equipo en semana de descanso"
     elif estado_pool == "uncertain":
         estado, accion, bloqueada, desconocida = "uncertain", "none", False, True
         hasta = pool.get("until_ms")

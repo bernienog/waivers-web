@@ -123,6 +123,32 @@ def match_sleeper(rows, pmap):
     return rows
 
 
+def bye_teams(cx, week, now_ms=None, max_age_ms=8 * 86400_000):
+    """Equipos en bye ESTA semana según el snapshot del wire (`team` donde
+    `bye == week`). Solo lectura local, cero llamadas.
+
+    Verificación estricta o nada: `week` debe coincidir con la semana del
+    snapshot y el snapshot debe ser fresco. Si no, set vacío (la fila queda
+    en W: dirección segura). Un `bye` de otra semana aplicado hoy sería un
+    `+` indebido, que es justo lo que nunca se regala."""
+    try:
+        wk = int(week or 0)
+    except (TypeError, ValueError):
+        return set()
+    if wk <= 0:
+        return set()
+    ahora = now_ms if now_ms is not None else int(time.time() * 1000)
+    try:
+        rows = cx.execute(
+            "SELECT DISTINCT team FROM fp_wire WHERE bye = ? AND week = ?"
+            " AND fetched_at > ? AND team IS NOT NULL AND team != ''",
+            (wk, wk, ahora - int(max_age_ms))).fetchall()
+    except Exception:
+        return set()
+    return {(r[0] if not hasattr(r, "keys") else r["team"] or "").upper()
+            for r in rows} - {""}
+
+
 def run_import(cx, pmap, html=None):
     """Fetch -> clean -> match -> replace snapshot. Devuelve resumen."""
     if html is None:

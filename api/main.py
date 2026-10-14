@@ -86,7 +86,7 @@ async def _unhandled(request: Request, exc: Exception):
 
 # Versión del backend (health + footer UI): la única forma de saber qué
 # build corre tras un reinstall (NSIS salta archivos bloqueados).
-APP_VERSION = "0.1.45"
+APP_VERSION = "0.1.46"
 def _uid():
     """User id dinámico (el wizard lo guarda sin reinicio)."""
     return os.environ.get("SLEEPER_USER_ID", "")
@@ -933,8 +933,29 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
                             now_ms=_now_ms, transactions=transacciones,
                             clears_ok=clears_ok)
     pendientes = set(transacciones.get("pending_player_ids") or [])
+    # Exención del lunes en semanal default: el pool está en W por el limbo
+    # entre semanas, pero los equipos en bye siguen agregables. Los byes
+    # salen del snapshot local del wire (cero llamadas): si no hay snapshot
+    # vigente para esta semana, el set queda vacío y todo sigue en W.
+    _prog = pub.build_waiver_schedule(lg_full.get("settings") or {},
+                                      now_ms=_now_ms)
+    try:
+        _leg = int((lg_full.get("settings") or {}).get("leg") or 0)
+    except (TypeError, ValueError):
+        _leg = 0
+    _monday = _prog.get("mode") == "weekly" and _prog.get("weekday") == 0
+    _byes = set()
+    if _monday and _leg > 0:
+        try:
+            from core import fantasypros as fp
+            _byes = fp.bye_teams(connect(), _leg, now_ms=_now_ms)
+        except Exception:
+            _byes = set()
     def fila(pid, v):
-        estado = pub.resolve_player_row(pid, clears, pendientes, win, _now_ms)
+        estado = pub.resolve_player_row(pid, clears, pendientes, win, _now_ms,
+                                        team=v.get("team") or "",
+                                        bye_teams=_byes,
+                                        monday_bye_free=_monday)
         estado.update(v)
         estado["player_id"] = str(pid)
         return estado
@@ -971,11 +992,11 @@ def free_agents(league_id: str, q: str = "", limit: int = 20,
     # Puntos = stats × scoring de LA LIGA (público). Sin esto, sortea por
     # `pts_ppr` que es scoring estándar y no coincide con la UI.
     # Los settings ya se leyeron arriba: no se repite la llamada.
-    lg_settings = lg_full.get("settings") or {}
     scoring_settings = pub.get_scoring_settings(league_id)
     # Ritmo de waivers con los días ya decodificados. `waiver_clear_days`
     # es retención por jugador y no se usa para decir cuándo abre el pool.
-    programa = pub.build_waiver_schedule(lg_settings, now_ms=_now_ms)
+    # Reusa el calendario ya construido arriba (mismos settings, mismo now).
+    programa = _prog
     cadence = pub.waiver_schedule_label(programa)
     try:
         pmap_proj = pub.get_projections_week(season, wk)
