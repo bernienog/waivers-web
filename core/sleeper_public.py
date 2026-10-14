@@ -511,6 +511,23 @@ def classify_waiver_pool(schedule, transactions, clears_ok=True, now_ms=None):
     resuelta = (bool(corrida) and resuelto >= corrida
                 and resuelto <= ahora)
 
+    # Semanal sin diarias: lun-mar Pacifico es limbo entre semanas (la nueva
+    # abre el miercoles 00 PST): Sleeper no da free agency ahi aunque no sea
+    # el dia del ancla. Sin esto, el martes salia "+" donde Sleeper muestra
+    # "W". Solo cuando hoy NO es el ancla: el dia del ancla usa su propia
+    # logica (antes de publicar bloquea, despues de resolver abre).
+    # Limite conocido (lunes de dia): el lunes de dia Sleeper aun da "+" en
+    # algunas filas (bye weeks y equipos fuera del Monday Night). Sin un mapa
+    # de calendario por equipo no se puede afinar por fila, asi que el pool
+    # bloquea de mas: muestra W donde Sleeper daria + en esas filas. Es la
+    # direccion segura (un claim de mas, nunca un add indebido) y el lunes
+    # casi no hay trafico.
+    if modo == "weekly" and hoy in (0, 1) and not dia_programado:
+        return base("locked", "claim", bloqueado=True,
+                    hasta=siguiente or corrida or 0, dia=hoy,
+                    motivo="entre semanas: abre con el proximo cierre",
+                    corrida=corrida, esperado=tope, observado=resuelto)
+
     # Sin evidencia de transacciones, solo se puede afirmar el W que ya dice
     # la propia etiqueta diaria. Nunca se puede afirmar un +.
     if not transacciones_ok:
